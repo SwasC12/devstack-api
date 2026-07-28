@@ -33,13 +33,20 @@ jobs:
 
       # Swap the local LocalDB connection string for the real MonsterASP one,
       # pulled from a secret. Keeps the prod connection string out of git.
+      # Build the connection string HERE from fixed, non-secret parts (server,
+      # db, user are not sensitive) + the password from a secret. This way the
+      # only thing in a secret is the raw password — no keywords/spaces to get
+      # wrong. Password read via env var so special characters can't break parsing.
       - name: Inject production connection string
         shell: pwsh
+        env:
+          DB_PASSWORD: ${{ secrets.MONSTER_DB_PASSWORD }}
         run: |
           $path = "published/appsettings.json"
           $json = Get-Content $path -Raw | ConvertFrom-Json
-          $json.ConnectionStrings.DefaultConnection = "${{ secrets.MONSTER_DB_CONNECTION }}"
+          $json.ConnectionStrings.DefaultConnection = "Server=db61486.databaseasp.net;Database=db61486;Uid=db61486;Pwd=$env:DB_PASSWORD;Encrypt=False;TrustServerCertificate=True;MultipleActiveResultSets=True;"
           $json | ConvertTo-Json -Depth 10 | Set-Content $path
+          Write-Host "Password length seen by workflow:" $env:DB_PASSWORD.Length
 
       # Turn on ASP.NET Core Module stdout logging + detailed errors so any
       # startup crash writes a readable reason to /wwwroot/logs/ (viewable over FTP)
