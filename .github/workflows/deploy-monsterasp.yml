@@ -45,17 +45,20 @@ jobs:
         run: |
           $path = "published/web.config"
           [xml]$xml = Get-Content $path
-          $ancm = $xml.configuration.'system.webServer'.aspNetCore
+          # Find <aspNetCore> by XPath so it works whether or not it's nested
+          # inside a <location> element (the modern SDK wraps it in one).
+          $ancm = $xml.SelectSingleNode('//aspNetCore')
           $ancm.SetAttribute('stdoutLogEnabled', 'true')
           $ancm.SetAttribute('stdoutLogFile', '.\logs\stdout')
-          if (-not $ancm.environmentVariables) {
+          $ev = $ancm.SelectSingleNode('environmentVariables')
+          if (-not $ev) {
             $ev = $xml.CreateElement('environmentVariables')
             $ancm.AppendChild($ev) | Out-Null
           }
           $var = $xml.CreateElement('environmentVariable')
           $var.SetAttribute('name', 'ASPNETCORE_DETAILEDERRORS')
           $var.SetAttribute('value', 'true')
-          $ancm.environmentVariables.AppendChild($var) | Out-Null
+          $ev.AppendChild($var) | Out-Null
           $xml.Save((Resolve-Path $path))
           New-Item -ItemType Directory -Force -Path published/logs | Out-Null
           Get-Content $path
