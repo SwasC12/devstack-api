@@ -63,13 +63,13 @@ using (var scope = app.Services.CreateScope())
 }
 
 // ── HTTP PIPELINE ───────────────────────────────────────────────────────────
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// Swagger enabled in all environments so we can sanity-check the live API too.
+app.UseSwagger();
+app.UseSwaggerUI();
 
-app.UseHttpsRedirection();
+// NOTE: no UseHttpsRedirection — on MonsterASP the app runs behind IIS, which
+// already terminates HTTPS. Redirecting here just logs "failed to determine the
+// https port" and can bounce API calls with unwanted redirects.
 app.UseCors();
 app.UseAuthorization();
 app.MapControllers();
