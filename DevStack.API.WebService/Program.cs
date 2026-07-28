@@ -34,21 +34,31 @@ var app = builder.Build();
 
 // Apply any pending EF migrations on startup so the DB schema is always current,
 // then seed a few of your real tools on first run (only if the table is empty).
+// Wrapped in try/catch so a transient DB problem can't crash the whole app on
+// boot — the API still starts, and DB errors surface per-request instead.
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<DevStackDataModel>();
-    db.Database.Migrate();
-
-    if (!db.Tools.Any())
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    try
     {
-        db.Tools.AddRange(
+        var db = scope.ServiceProvider.GetRequiredService<DevStackDataModel>();
+        db.Database.Migrate();
+
+        if (!db.Tools.Any())
+        {
+            db.Tools.AddRange(
             new Tool { Name = "Supabase", Category = "Database", Url = "https://supabase.com", IsPaid = false, Currency = "USD", Projects = "Gearheads Blog", CreatedAt = DateTime.UtcNow },
             new Tool { Name = "Cloudinary", Category = "Media", Url = "https://cloudinary.com", IsPaid = false, Currency = "USD", Projects = "Gearheads Blog", CreatedAt = DateTime.UtcNow },
             new Tool { Name = "MonsterASP.NET", Category = "Hosting", Url = "https://monsterasp.net", IsPaid = true, MonthlyCost = 3m, Currency = "USD", Projects = "DevStack", CreatedAt = DateTime.UtcNow },
             new Tool { Name = "Resend", Category = "Email", Url = "https://resend.com", IsPaid = false, Currency = "USD", CreatedAt = DateTime.UtcNow },
             new Tool { Name = "Vercel", Category = "Hosting", Url = "https://vercel.com", IsPaid = false, Currency = "USD", Projects = "DevStack", CreatedAt = DateTime.UtcNow }
-        );
-        db.SaveChanges();
+            );
+            db.SaveChanges();
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Database migration/seed failed on startup.");
     }
 }
 

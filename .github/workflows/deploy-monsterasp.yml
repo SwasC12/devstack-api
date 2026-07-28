@@ -21,8 +21,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Publish WebService
-        run: dotnet publish DevStack.API.WebService/DevStack.API.WebService.csproj -c Release -o published
+      # Publish for win-x86 to match MonsterASP's 32-bit app pool. This produces
+      # the Windows .exe launcher + a correct web.config (framework-dependent, so
+      # it relies on the .NET 10 runtime already installed on MonsterASP).
+      - name: Publish WebService (win-x86)
+        run: dotnet publish DevStack.API.WebService/DevStack.API.WebService.csproj -c Release -r win-x86 --self-contained false -o published
 
       # Swap the local LocalDB connection string for the real MonsterASP one,
       # pulled from a secret. Keeps the prod connection string out of git.
@@ -33,6 +36,29 @@ jobs:
           $json = Get-Content $path -Raw | ConvertFrom-Json
           $json.ConnectionStrings.DefaultConnection = "${{ secrets.MONSTER_DB_CONNECTION }}"
           $json | ConvertTo-Json -Depth 10 | Set-Content $path
+
+      # Turn on ASP.NET Core Module stdout logging + detailed errors so any
+      # startup crash writes a readable reason to /wwwroot/logs/ (viewable over FTP)
+      # instead of silently resetting the connection.
+      - name: Enable startup crash logging
+        shell: pwsh
+        run: |
+          $path = "published/web.config"
+          [xml]$xml = Get-Content $path
+          $ancm = $xml.configuration.'system.webServer'.aspNetCore
+          $ancm.SetAttribute('stdoutLogEnabled', 'true')
+          $ancm.SetAttribute('stdoutLogFile', '.\logs\stdout')
+          if (-not $ancm.environmentVariables) {
+            $ev = $xml.CreateElement('environmentVariables')
+            $ancm.AppendChild($ev) | Out-Null
+          }
+          $var = $xml.CreateElement('environmentVariable')
+          $var.SetAttribute('name', 'ASPNETCORE_DETAILEDERRORS')
+          $var.SetAttribute('value', 'true')
+          $ancm.environmentVariables.AppendChild($var) | Out-Null
+          $xml.Save((Resolve-Path $path))
+          New-Item -ItemType Directory -Force -Path published/logs | Out-Null
+          Get-Content $path
 
       - name: Deploy via FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
