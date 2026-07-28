@@ -11,6 +11,10 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      FTP_HOST: ${{ secrets.MONSTER_SERVER_COMPUTER_NAME }} # site81936.siteasp.net
+      FTP_USER: ${{ secrets.MONSTER_USERNAME }}             # site81936
+      FTP_PASS: ${{ secrets.MONSTER_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -45,8 +49,6 @@ jobs:
         run: |
           $path = "published/web.config"
           [xml]$xml = Get-Content $path
-          # Find <aspNetCore> by XPath so it works whether or not it's nested
-          # inside a <location> element (the modern SDK wraps it in one).
           $ancm = $xml.SelectSingleNode('//aspNetCore')
           $ancm.SetAttribute('stdoutLogEnabled', 'true')
           $ancm.SetAttribute('stdoutLogFile', '.\logs\stdout')
@@ -63,11 +65,32 @@ jobs:
           New-Item -ItemType Directory -Force -Path published/logs | Out-Null
           Get-Content $path
 
+      # Drop app_offline.htm so IIS/ANCM cleanly stops the app and releases its
+      # locks on native DLLs (e.g. Microsoft.Data.SqlClient.SNI.dll) — otherwise
+      # FTP overwrite fails with "550 ... GetHandle: failure".
+      - name: Take app offline
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          printf '<html><body>Deploying, back shortly.</body></html>' > app_offline.htm
+          lftp -e "set ssl:verify-certificate no; set ftp:ssl-allow true; put -O /wwwroot app_offline.htm; bye" -u "$FTP_USER","$FTP_PASS" "$FTP_HOST"
+          sleep 10
+
       - name: Deploy via FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
-          server: ${{ secrets.MONSTER_SERVER_COMPUTER_NAME }} # site81936.siteasp.net
-          username: ${{ secrets.MONSTER_USERNAME }}           # site81936
+          server: ${{ secrets.MONSTER_SERVER_COMPUTER_NAME }}
+          username: ${{ secrets.MONSTER_USERNAME }}
           password: ${{ secrets.MONSTER_PASSWORD }}
           local-dir: ./published/
           server-dir: /wwwroot/
+          # Don't let the sync delete app_offline.htm; we remove it ourselves next.
+          exclude: |
+            **/app_offline.htm
+
+      # Remove app_offline.htm to bring the app back up. `always()` so the site
+      # never gets stranded offline even if the deploy step failed.
+      - name: Bring app online
+        if: always()
+        run: |
+          command -v lftp >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq lftp)
+          lftp -e "set ssl:verify-certificate no; set ftp:ssl-allow true; rm -f /wwwroot/app_offline.htm; bye" -u "$FTP_USER","$FTP_PASS" "$FTP_HOST"
