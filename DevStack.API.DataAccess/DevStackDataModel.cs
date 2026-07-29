@@ -15,7 +15,7 @@ public class DevStackDataModel : DbContext
 
     // Becomes the "Tools" table; also the entry point for querying it.
     public DbSet<Tool> Tools => Set<Tool>();
-
+    public DbSet<Project> Projects => Set<Project>();
     // OnModelCreating is where you fine-tune how entities map to columns
     // (the "Fluent API"). Here we tell SQL Server exactly how precise the
     // money column is: 18 total digits, 2 after the decimal point.
