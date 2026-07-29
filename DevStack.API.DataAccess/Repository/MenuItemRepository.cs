@@ -42,7 +42,9 @@ public class MenuItemRepository : IMenuItemRepository
         existing.Price = item.Price;
         existing.Description = item.Description;
         existing.ImageUrl = item.ImageUrl;
+        existing.ImagePublicId = item.ImagePublicId;
         existing.IsAvailable = item.IsAvailable;
+        existing.StockQuantity = item.StockQuantity;
 
         await _db.SaveChangesAsync();
         return existing;

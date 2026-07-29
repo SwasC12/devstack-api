@@ -3,26 +3,33 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevStack.API.DataAccess;
 
-// The EF Core DbContext — the bridge between C# objects and SQL Server tables.
-// (TDC names their context the "DataModel", so we follow that.)
 public class DevStackDataModel : DbContext
 {
-    // Options (which DB + connection string) are injected from WebService/Program.cs.
-    public DevStackDataModel(DbContextOptions<DevStackDataModel> options)
-        : base(options)
-    {
-    }
+    public DevStackDataModel(DbContextOptions<DevStackDataModel> options) : base(options) { }
 
-    // Becomes the "MenuItems" table; also the entry point for querying it.
     public DbSet<MenuItem> MenuItems => Set<MenuItem>();
+    public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderItem> OrderItems => Set<OrderItem>();
+    public DbSet<Shift> Shifts => Set<Shift>();
 
-    // OnModelCreating is where you fine-tune how entities map to columns
-    // (the "Fluent API"). Here we tell SQL Server exactly how precise the
-    // money column is: 18 total digits, 2 after the decimal point.
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<MenuItem>()
             .Property(i => i.Price)
             .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Order>()
+            .Property(o => o.Total)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<OrderItem>()
+            .Property(i => i.Price)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<OrderItem>()
+            .HasOne<Order>()
+            .WithMany(o => o.Items)
+            .HasForeignKey(i => i.OrderId);
     }
 }

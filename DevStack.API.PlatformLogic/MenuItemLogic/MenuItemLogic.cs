@@ -69,7 +69,7 @@ public class MenuItemLogic : IMenuItemLogic
 
             if (item.Id == 0)
             {
-                item.CreatedAt = DateTime.UtcNow;
+                item.CreatedAt = DateTime.UtcNow.AddHours(2);
                 var created = await _repo.AddAsync(item);
                 return ResultModel<MenuItem>.Success(created);
             }
