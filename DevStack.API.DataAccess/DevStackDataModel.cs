@@ -13,16 +13,16 @@ public class DevStackDataModel : DbContext
     {
     }
 
-    // Becomes the "Tools" table; also the entry point for querying it.
-    public DbSet<Tool> Tools => Set<Tool>();
-    public DbSet<Project> Projects => Set<Project>();
+    // Becomes the "MenuItems" table; also the entry point for querying it.
+    public DbSet<MenuItem> MenuItems => Set<MenuItem>();
+
     // OnModelCreating is where you fine-tune how entities map to columns
     // (the "Fluent API"). Here we tell SQL Server exactly how precise the
     // money column is: 18 total digits, 2 after the decimal point.
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<Tool>()
-            .Property(t => t.MonthlyCost)
+        modelBuilder.Entity<MenuItem>()
+            .Property(i => i.Price)
             .HasPrecision(18, 2);
     }
 }

@@ -6,11 +6,11 @@ namespace DevStack.API.DataAccess.Repository;
 // work. The logic layer depends on this interface, not the concrete class —
 // so we could swap the implementation (or fake it in a test) without changing
 // anything upstream. This is the heart of "dependency inversion".
-public interface IToolRepository
+public interface IMenuItemRepository
 {
-    Task<List<Tool>> GetAllAsync();
-    Task<Tool?> GetByIdAsync(int id);
-    Task<Tool> AddAsync(Tool tool);
-    Task<bool> UpdateAsync(Tool tool);
+    Task<List<MenuItem>> GetAllAsync();
+    Task<MenuItem?> GetByIdAsync(int id);
+    Task<MenuItem> AddAsync(MenuItem item);
+    Task<MenuItem?> UpdateAsync(MenuItem item); // null if the id doesn't exist
     Task<bool> DeleteAsync(int id);
 }
