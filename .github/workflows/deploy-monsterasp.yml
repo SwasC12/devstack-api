@@ -44,7 +44,7 @@ jobs:
         run: |
           $path = "published/appsettings.json"
           $json = Get-Content $path -Raw | ConvertFrom-Json
-          $json.ConnectionStrings.DefaultConnection = "Server=db61486.databaseasp.net;Database=db61486;Uid=db61486;Pwd=$env:DB_PASSWORD;Encrypt=False;TrustServerCertificate=True;MultipleActiveResultSets=True;"
+          $json.ConnectionStrings.DefaultConnection = "Server=db61580.databaseasp.net;Database=db61580;Uid=db61580;Pwd=$env:DB_PASSWORD;Encrypt=False;TrustServerCertificate=True;MultipleActiveResultSets=True;"
           $json | ConvertTo-Json -Depth 10 | Set-Content $path
           Write-Host "Password length seen by workflow:" $env:DB_PASSWORD.Length
 
