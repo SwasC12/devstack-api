@@ -5,22 +5,28 @@ using DevStack.API.DataAccess;
 using DevStack.API.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
 namespace DevStack.API.WebService.Controllers;
 
+// Rate-limited (per-IP) and backed by a failed-attempt lockout so a brute-force
+// attack can't hammer the login endpoints. See Program.cs for the "auth" policy.
 [ApiController]
 [Route("api/[controller]")]
+[EnableRateLimiting("auth")]
 public class AuthController : ControllerBase
 {
     private readonly DevStackDataModel _db;
     private readonly IConfiguration _config;
+    private readonly IAuthThrottle _throttle;
 
-    public AuthController(DevStackDataModel db, IConfiguration config)
+    public AuthController(DevStackDataModel db, IConfiguration config, IAuthThrottle throttle)
     {
         _db = db;
         _config = config;
+        _throttle = throttle;
     }
 
     public record LoginRequest(string ShopCode, string Username, string Password);
@@ -33,17 +39,29 @@ public class AuthController : ControllerBase
     [HttpPost("login")]
     public async Task<ActionResult<LoginResponse>> Login(LoginRequest request)
     {
+        var key = ThrottleKey(request.Username);
+        if (_throttle.IsLockedOut(key))
+            return StatusCode(StatusCodes.Status423Locked, new { error = "Too many failed attempts. Try again in a few minutes." });
+
         var code = request.ShopCode?.Trim();
         if (string.IsNullOrEmpty(code))
             return BadRequest(new { error = "Shop code is required." });
 
         var shop = await _db.Shops.FirstOrDefaultAsync(s => s.Code == code.ToUpperInvariant());
-        if (shop is null) return Unauthorized(new { error = "Invalid shop code or credentials." });
+        if (shop is null)
+        {
+            _throttle.RecordFailure(key);
+            return Unauthorized(new { error = "Invalid shop code or credentials." });
+        }
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.ShopId == shop.Id && u.Username == request.Username);
         if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+        {
+            _throttle.RecordFailure(key);
             return Unauthorized(new { error = "Invalid shop code or credentials." });
+        }
 
+        _throttle.Reset(key);
         var token = CreateToken(user, shop);
         return Ok(new LoginResponse(token, user.Username, user.DisplayName, user.Role, user.ShopId, shop.Name, shop.Code));
     }
@@ -53,10 +71,18 @@ public class AuthController : ControllerBase
     [HttpPost("superadmin-login")]
     public async Task<ActionResult<LoginResponse>> SuperadminLogin(SuperadminLoginRequest request)
     {
+        var key = ThrottleKey(request.Username);
+        if (_throttle.IsLockedOut(key))
+            return StatusCode(StatusCodes.Status423Locked, new { error = "Too many failed attempts. Try again in a few minutes." });
+
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Role == "superadmin" && u.Username == request.Username);
         if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+        {
+            _throttle.RecordFailure(key);
             return Unauthorized(new { error = "Invalid platform credentials." });
+        }
 
+        _throttle.Reset(key);
         var token = CreateToken(user, null);
         return Ok(new LoginResponse(token, user.Username, user.DisplayName, user.Role, null, null, null));
     }
@@ -112,6 +138,11 @@ public class AuthController : ControllerBase
     }
 
     public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+    // Lockout identity: the caller's IP + the account they're trying, so failed
+    // guesses for one user don't trip another user's lockout.
+    private string ThrottleKey(string username) =>
+        $"{HttpContext.Connection.RemoteIpAddress}|{username.Trim().ToLowerInvariant()}";
 
     private string CreateToken(AppUser user, Shop? shop)
     {

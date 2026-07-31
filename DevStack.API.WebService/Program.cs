@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Text;
+using System.Threading.RateLimiting;
 using DevStack.API.DataAccess;
 using DevStack.API.DataAccess.Repository;
 using DevStack.API.Models;
@@ -7,6 +9,7 @@ using DevStack.API.PlatformLogic.CategoryLogic;
 using DevStack.API.PlatformLogic.MenuItemLogic;
 using DevStack.API.WebService;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
@@ -22,6 +25,28 @@ builder.Services.AddSwaggerGen();
 // Multi-tenancy: resolves the current shop per request (from the JWT claim).
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentShop, CurrentShopService>();
+
+// Brute-force defence: a per-IP cap on auth endpoints + a failed-attempt
+// lockout service. The "auth" policy is applied via [EnableRateLimiting].
+builder.Services.AddSingleton<IAuthThrottle, AuthThrottleService>();
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, _) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsJsonAsync(new { error = "Too many attempts. Try again shortly." });
+    };
+    options.AddPolicy("auth", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+});
 
 // EF Core → SQL Server.
 builder.Services.AddDbContext<DevStackDataModel>(options =>
@@ -73,12 +98,21 @@ using (var scope = app.Services.CreateScope())
         db.Database.Migrate();
 
         // Platform superadmin — not tied to any shop. Used to provision shops.
+        // No password lives in code: take one from config (Seed:SuperadminPassword
+        // / env Seed__SuperadminPassword) or generate a one-time password and log it.
         if (!db.Users.Any(u => u.Role == "superadmin"))
         {
+            var pw = builder.Configuration["Seed:SuperadminPassword"];
+            if (string.IsNullOrEmpty(pw))
+            {
+                pw = GeneratePassword();
+                logger.LogWarning("Superadmin created with a generated password. Change it after first login.");
+                logger.LogInformation("One-time superadmin password: {Password}", pw);
+            }
             db.Users.Add(new AppUser
             {
                 Username = "superadmin",
-                PasswordHash = BCrypt.Net.BCrypt.HashPassword("superadmin123"),
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(pw),
                 DisplayName = "Super Admin",
                 Role = "superadmin",
                 ShopId = null
@@ -115,13 +149,21 @@ using (var scope = app.Services.CreateScope())
             db.SaveChanges();
 
             // Out-of-the-box admin for the default shop (skipped if a
-            // pre-existing admin was backfilled above).
+            // pre-existing admin was backfilled above). Same no-password-in-code
+            // rule as the superadmin: config or a generated one-time password.
             if (!db.Users.Any(u => u.ShopId == shop.Id))
             {
+                var pw = builder.Configuration["Seed:DefaultAdminPassword"];
+                if (string.IsNullOrEmpty(pw))
+                {
+                    pw = GeneratePassword();
+                    logger.LogWarning("Default shop admin created with a generated password. Change it after first login.");
+                    logger.LogInformation("One-time default admin password: {Password}", pw);
+                }
                 db.Users.Add(new AppUser
                 {
                     Username = "admin",
-                    PasswordHash = BCrypt.Net.BCrypt.HashPassword("admin123"),
+                    PasswordHash = BCrypt.Net.BCrypt.HashPassword(pw),
                     DisplayName = "Admin",
                     Role = "admin",
                     ShopId = shop.Id
@@ -141,8 +183,21 @@ app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseCors();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+// Fresh installs never get a password from code. Take one from configuration
+// (Seed:SuperadminPassword / Seed:DefaultAdminPassword, or the Seed__* env
+// vars), otherwise generate a strong one-time password and log it once.
+static string GeneratePassword(int length = 18)
+{
+    const string chars = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*";
+    var bytes = RandomNumberGenerator.GetBytes(length);
+    var sb = new StringBuilder(length);
+    for (var i = 0; i < length; i++) sb.Append(chars[bytes[i] % chars.Length]);
+    return sb.ToString();
+}
