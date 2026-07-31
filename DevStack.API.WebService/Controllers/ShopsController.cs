@@ -49,6 +49,10 @@ public class ShopsController : ControllerBase
             return BadRequest(new { error = "Shop name and code are required." });
         if (adminUsername.Length == 0 || string.IsNullOrEmpty(request.AdminPassword))
             return BadRequest(new { error = "The first admin needs a username and password." });
+
+        var policyError = PasswordPolicy.Validate(request.AdminPassword);
+        if (policyError is not null) return BadRequest(new { error = policyError });
+
         if (await _db.Shops.AnyAsync(s => s.Code == code))
             return BadRequest(new { error = $"A shop with code '{code}' already exists." });
 
