@@ -12,4 +12,5 @@ public class MenuItem
     public bool IsAvailable { get; set; } = true;
     public int StockQuantity { get; set; } = 0;
     public DateTime CreatedAt { get; set; }
+    public int ShopId { get; set; }
 }

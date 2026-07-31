@@ -5,9 +5,16 @@ namespace DevStack.API.DataAccess;
 
 public class DevStackDataModel : DbContext
 {
-    public DevStackDataModel(DbContextOptions<DevStackDataModel> options) : base(options) { }
+    private readonly ICurrentShop _currentShop;
+
+    public DevStackDataModel(DbContextOptions<DevStackDataModel> options, ICurrentShop currentShop) : base(options)
+    {
+        _currentShop = currentShop;
+    }
 
     public DbSet<MenuItem> MenuItems => Set<MenuItem>();
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Shop> Shops => Set<Shop>();
     public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
@@ -15,6 +22,13 @@ public class DevStackDataModel : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // Multi-tenancy: every query on these tables is scoped to the current
+        // shop automatically, so a missed .Where() can't leak across shops.
+        modelBuilder.Entity<MenuItem>().HasQueryFilter(m => m.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<Category>().HasQueryFilter(c => c.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<Order>().HasQueryFilter(o => o.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<Shift>().HasQueryFilter(s => s.ShopId == _currentShop.ShopId);
+
         modelBuilder.Entity<MenuItem>()
             .Property(i => i.Price)
             .HasPrecision(18, 2);

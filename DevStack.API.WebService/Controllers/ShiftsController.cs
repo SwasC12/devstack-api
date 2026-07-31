@@ -13,8 +13,13 @@ namespace DevStack.API.WebService.Controllers;
 public class ShiftsController : ControllerBase
 {
     private readonly DevStackDataModel _db;
+    private readonly ICurrentShop _currentShop;
 
-    public ShiftsController(DevStackDataModel db) => _db = db;
+    public ShiftsController(DevStackDataModel db, ICurrentShop currentShop)
+    {
+        _db = db;
+        _currentShop = currentShop;
+    }
 
     private int UserId => int.Parse(User.FindFirstValue("userId")!);
 
@@ -38,7 +43,7 @@ public class ShiftsController : ControllerBase
         var active = await _db.Shifts.Where(s => s.UserId == UserId && s.IsActive).ToListAsync();
         foreach (var s in active) s.EndTime = DateTime.UtcNow.AddHours(2);
 
-        var shift = new Shift { UserId = UserId, StartTime = DateTime.UtcNow.AddHours(2) };
+        var shift = new Shift { UserId = UserId, StartTime = DateTime.UtcNow.AddHours(2), ShopId = _currentShop.ShopId };
         _db.Shifts.Add(shift);
         await _db.SaveChangesAsync();
         return Ok(new { id = shift.Id, startTime = shift.StartTime });

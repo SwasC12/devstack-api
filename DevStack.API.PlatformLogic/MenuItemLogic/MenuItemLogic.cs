@@ -15,15 +15,18 @@ public class MenuItemLogic : IMenuItemLogic
     private readonly IMenuItemRepository _repo;
     private readonly CloudinarySettings _cloudinary;
     private readonly IErrorHandling _errorHandling;
+    private readonly ICurrentShop _currentShop;
 
     public MenuItemLogic(
         IMenuItemRepository repo,
         IOptions<CloudinarySettings> cloudinary,
-        IErrorHandling errorHandling)
+        IErrorHandling errorHandling,
+        ICurrentShop currentShop)
     {
         _repo = repo;
         _cloudinary = cloudinary.Value;
         _errorHandling = errorHandling;
+        _currentShop = currentShop;
     }
 
     // ── READ ──────────────────────────────────────────────────────────────────
@@ -66,6 +69,9 @@ public class MenuItemLogic : IMenuItemLogic
             item.Name = item.Name.Trim();
             item.Category = item.Category.Trim();
             if (item.Price < 0) item.Price = 0;
+
+            // Items always belong to the current shop; the client can't change it.
+            item.ShopId = _currentShop.ShopId;
 
             if (item.Id == 0)
             {

@@ -1,10 +1,9 @@
 namespace DevStack.API.Models;
 
-public class Order
+public class Category
 {
     public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
-    public decimal Total { get; set; }
-    public List<OrderItem> Items { get; set; } = [];
     public int ShopId { get; set; }
 }
