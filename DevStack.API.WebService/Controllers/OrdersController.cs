@@ -193,6 +193,72 @@ public class OrdersController : ControllerBase
         return order is null ? NotFound() : Ok(order);
     }
 
+    // GET /api/orders/analytics?days=14 — admin only. Owner analytics: daily
+    // revenue series, per-cashier totals and per-category sales. Voided orders
+    // excluded; everything scoped to the current shop by the global filter.
+    [Authorize(Roles = "admin")]
+    [HttpGet("analytics")]
+    public async Task<ActionResult> GetAnalytics([FromQuery] int days = 14)
+    {
+        days = Math.Clamp(days, 1, 90);
+        var from = DateTime.UtcNow.AddHours(2).Date.AddDays(-(days - 1));
+
+        var orders = await _db.Orders
+            .Where(o => o.VoidedAt == null && o.CreatedAt >= from)
+            .Include(o => o.Items)
+            .ToListAsync();
+
+        var daily = orders
+            .GroupBy(o => o.CreatedAt.Date)
+            .OrderBy(g => g.Key)
+            .Select(g => new { date = g.Key.ToString("yyyy-MM-dd"), revenue = g.Sum(o => o.Total), orders = g.Count() })
+            .ToList();
+
+        // Per-cashier: display names joined from Users.
+        var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct().ToList();
+        var users = await _db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.DisplayName);
+        var cashiers = orders
+            .Where(o => o.UserId is not null)
+            .GroupBy(o => o.UserId!.Value)
+            .Select(g => new
+            {
+                name = users.TryGetValue(g.Key, out var n) ? n : "Unknown",
+                orders = g.Count(),
+                revenue = g.Sum(o => o.Total)
+            })
+            .OrderByDescending(c => c.revenue)
+            .ToList();
+
+        // Per-category: line items don't carry the category, so join to the
+        // current menu items (deleted/renamed items fall into "Other").
+        var menuItems = await _db.MenuItems.ToDictionaryAsync(m => m.Id, m => m.Category);
+        var categories = orders
+            .SelectMany(o => o.Items)
+            .GroupBy(i => menuItems.TryGetValue(i.MenuItemId, out var cat) && !string.IsNullOrWhiteSpace(cat) ? cat : "Other")
+            .Select(g => new
+            {
+                name = g.Key,
+                quantity = g.Sum(i => i.Quantity),
+                revenue = g.Sum(i => i.Price * i.Quantity)
+            })
+            .OrderByDescending(g => g.revenue)
+            .ToList();
+
+        return Ok(new
+        {
+            days,
+            totals = new
+            {
+                revenue = orders.Sum(o => o.Total),
+                orders = orders.Count,
+                items = orders.Sum(o => o.Items.Sum(i => i.Quantity))
+            },
+            daily,
+            cashiers,
+            categories
+        });
+    }
+
     // GET /api/orders/summary — analytics (admin only). Voided orders are
     // excluded from every figure: revenue means money actually taken.
     [Authorize(Roles = "admin")]
