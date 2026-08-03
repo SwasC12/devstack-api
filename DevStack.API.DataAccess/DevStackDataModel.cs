@@ -20,6 +20,7 @@ public class DevStackDataModel : DbContext
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
     public DbSet<Shift> Shifts => Set<Shift>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<Discount> Discounts => Set<Discount>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -29,6 +30,7 @@ public class DevStackDataModel : DbContext
         modelBuilder.Entity<Category>().HasQueryFilter(c => c.ShopId == _currentShop.ShopId);
         modelBuilder.Entity<Order>().HasQueryFilter(o => o.ShopId == _currentShop.ShopId);
         modelBuilder.Entity<Shift>().HasQueryFilter(s => s.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<Discount>().HasQueryFilter(d => d.ShopId == _currentShop.ShopId);
 
         modelBuilder.Entity<Shop>()
             .Property(s => s.IsActive)
@@ -48,6 +50,14 @@ public class DevStackDataModel : DbContext
 
         modelBuilder.Entity<Order>()
             .Property(o => o.ChangeGiven)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Order>()
+            .Property(o => o.DiscountAmount)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Discount>()
+            .Property(d => d.Value)
             .HasPrecision(18, 2);
 
         modelBuilder.Entity<OrderItem>()

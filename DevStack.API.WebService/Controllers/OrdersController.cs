@@ -20,7 +20,7 @@ public class OrdersController : ControllerBase
         _currentShop = currentShop;
     }
 
-    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null);
+    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null);
     public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity);
     public record VoidOrderRequest(string Reason);
 
@@ -97,6 +97,25 @@ public class OrdersController : ControllerBase
 
         order.Total = order.Items.Sum(i => i.Price * i.Quantity);
 
+        // Discount: only the ID comes from the client — existence, schedule and
+        // the amount are decided here, server-side.
+        if (request.DiscountId is not null)
+        {
+            var discount = await _db.Discounts.FirstOrDefaultAsync(d => d.Id == request.DiscountId);
+            if (discount is null || !discount.IsLiveAt(DateTime.UtcNow.AddHours(2)))
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = "That discount isn't available right now." });
+            }
+
+            order.DiscountId = discount.Id;
+            order.DiscountName = discount.Name;
+            order.DiscountAmount = discount.Type == "percent"
+                ? Math.Round(order.Total * discount.Value / 100m, 2)
+                : Math.Min(discount.Value, order.Total);
+            order.Total -= order.DiscountAmount;
+        }
+
         // Cash: the tendered amount must cover the total; change is computed
         // server-side, never trusted from the client.
         if (method == "cash")
@@ -144,6 +163,9 @@ public class OrdersController : ControllerBase
             o.PaymentMethod,
             o.AmountReceived,
             o.ChangeGiven,
+            o.DiscountId,
+            o.DiscountName,
+            o.DiscountAmount,
             o.VoidedAt,
             o.VoidedByUserId,
             o.VoidReason,
