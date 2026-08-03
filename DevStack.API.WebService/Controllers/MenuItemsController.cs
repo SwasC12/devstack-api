@@ -1,5 +1,6 @@
 using DevStack.API.Models;
 using DevStack.API.PlatformLogic.MenuItemLogic;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DevStack.API.WebService.Controllers;
@@ -7,6 +8,10 @@ namespace DevStack.API.WebService.Controllers;
 // [ApiController] turns on helpful API behaviour (automatic model validation,
 // binding, etc.). The route "api/menuitems" comes from the class name via
 // [controller] = "MenuItems" (MVC strips the "Controller" suffix, lowercased).
+//
+// GET stays public (the customer menu reads it). The write endpoints are
+// admin-only: prices, stock and availability are the owner's domain, and
+// leaving them open lets anyone rewrite a shop's catalogue.
 //
 // Two write-side endpoints only, by design:
 //   PUT    api/menuitems      → Write  (creates when Id == 0, otherwise edits)
@@ -45,6 +50,7 @@ public class MenuItemsController : ControllerBase
     }
 
     // PUT api/menuitems  — the single "write" call: create or edit.
+    [Authorize(Roles = "admin")]
     [HttpPut]
     public async Task<ActionResult<MenuItem>> Write(MenuItem item)
     {
@@ -60,6 +66,7 @@ public class MenuItemsController : ControllerBase
     }
 
     // DELETE api/menuitems/5
+    [Authorize(Roles = "admin")]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {

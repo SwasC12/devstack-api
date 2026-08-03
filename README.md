@@ -39,3 +39,31 @@ workflow in `.github/workflows/deploy-monsterasp.yml`, which publishes the
 `WebService` project and deploys it via Web Deploy. The production SQL
 connection string is injected from a GitHub secret at deploy time (never
 committed).
+
+### GitHub secrets used at deploy time
+
+| Secret | Needed for |
+|---|---|
+| `MONSTER_DB_PASSWORD` | Production SQL connection string (required) |
+| `MONSTER_JWT_KEY` | Signing key for auth tokens. **Set it** — the committed value is a dev-only key. Any long random string ≥ 32 chars. |
+| `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Server-side image cleanup when a menu item is deleted. Without them, delete works but the Cloudinary image is orphaned. |
+
+## Shop lifecycle (platform owner)
+
+Shops can be **suspended** and **reactivated** by the superadmin
+(`PUT api/shops/{id}/status`). A suspended shop is blocked at the door: login,
+PIN login, staff lookup and token refresh all refuse it, so existing sessions
+die within the 15-minute access-token lifetime.
+
+`POST api/shops/{id}/reset-admin-password` sets a fresh random password for the
+shop's first admin and returns it **once** (there is no email system — the
+platform owner relays it). Only the bcrypt hash is stored.
+
+## Order integrity & history
+
+- Prices and names on an order come from the **database**, never the client.
+- Stock decrements are **atomic** (`UPDATE … WHERE StockQuantity >= qty` inside
+a transaction), so two concurrent checkouts can't oversell.
+- Every order records its **cashier** (`UserId`).
+- Admin can **void** an order (`POST api/orders/{id}/void`, reason required);
+voided orders are excluded from revenue and their stock is restored.

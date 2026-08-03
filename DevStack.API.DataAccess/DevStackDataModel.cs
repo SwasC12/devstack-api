@@ -30,6 +30,10 @@ public class DevStackDataModel : DbContext
         modelBuilder.Entity<Order>().HasQueryFilter(o => o.ShopId == _currentShop.ShopId);
         modelBuilder.Entity<Shift>().HasQueryFilter(s => s.ShopId == _currentShop.ShopId);
 
+        modelBuilder.Entity<Shop>()
+            .Property(s => s.IsActive)
+            .HasDefaultValue(true);
+
         modelBuilder.Entity<MenuItem>()
             .Property(i => i.Price)
             .HasPrecision(18, 2);

@@ -60,6 +60,8 @@ public class AuthController : ControllerBase
             _throttle.RecordFailure(key);
             return Unauthorized(new { error = "Invalid shop code or credentials." });
         }
+        if (!shop.IsActive)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "This shop is suspended. Contact the platform owner." });
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.ShopId == shop.Id && u.Username == request.Username);
         if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
@@ -111,6 +113,8 @@ public class AuthController : ControllerBase
             _throttle.RecordFailure(key);
             return Unauthorized(new { error = "Invalid shop or PIN." });
         }
+        if (!shop.IsActive)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "This shop is suspended. Contact the platform owner." });
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.ShopId == shop.Id && u.Id == request.UserId);
         if (user is null || string.IsNullOrEmpty(user.PinHash) || !BCrypt.Net.BCrypt.Verify(request.Pin, user.PinHash))
@@ -132,6 +136,8 @@ public class AuthController : ControllerBase
     {
         var shop = await _db.Shops.FirstOrDefaultAsync(s => s.Code == request.ShopCode.Trim().ToUpperInvariant());
         if (shop is null) return NotFound(new { error = "Shop not found." });
+        if (!shop.IsActive)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "This shop is suspended. Contact the platform owner." });
 
         var staff = await _db.Users
             .Where(u => u.ShopId == shop.Id && u.Role != "superadmin")
@@ -174,7 +180,19 @@ public class AuthController : ControllerBase
 
         Shop? shop = null;
         if (user.ShopId is not null)
+        {
             shop = await _db.Shops.FindAsync(user.ShopId);
+            // Suspended tenant: burn the whole token chain and refuse to refresh.
+            // The 15-minute access token is the last thing that works.
+            if (shop is not null && !shop.IsActive)
+            {
+                var active = await _db.RefreshTokens.Where(t => t.UserId == user.Id && t.RevokedAtUtc == null).ToListAsync();
+                foreach (var t in active) t.RevokedAtUtc = DateTime.UtcNow;
+                await _db.SaveChangesAsync();
+                Response.Cookies.Delete(RefreshCookieName);
+                return Unauthorized();
+            }
+        }
 
         // Rotate: revoke the used token and hand back a fresh one.
         stored.RevokedAtUtc = DateTime.UtcNow;

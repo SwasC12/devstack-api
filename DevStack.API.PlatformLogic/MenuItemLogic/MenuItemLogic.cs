@@ -13,17 +13,20 @@ namespace DevStack.API.PlatformLogic.MenuItemLogic;
 public class MenuItemLogic : IMenuItemLogic
 {
     private readonly IMenuItemRepository _repo;
+    private readonly ICategoryRepository _categoryRepo;
     private readonly CloudinarySettings _cloudinary;
     private readonly IErrorHandling _errorHandling;
     private readonly ICurrentShop _currentShop;
 
     public MenuItemLogic(
         IMenuItemRepository repo,
+        ICategoryRepository categoryRepo,
         IOptions<CloudinarySettings> cloudinary,
         IErrorHandling errorHandling,
         ICurrentShop currentShop)
     {
         _repo = repo;
+        _categoryRepo = categoryRepo;
         _cloudinary = cloudinary.Value;
         _errorHandling = errorHandling;
         _currentShop = currentShop;
@@ -67,11 +70,29 @@ public class MenuItemLogic : IMenuItemLogic
         try
         {
             item.Name = item.Name.Trim();
+            if (item.Name.Length == 0)
+                throw new ArgumentException("Item name cannot be empty.");
+
             item.Category = item.Category.Trim();
             if (item.Price < 0) item.Price = 0;
 
             // Items always belong to the current shop; the client can't change it.
             item.ShopId = _currentShop.ShopId;
+
+            // Categories are a real table now, but items still carry a plain
+            // string. Keep the two in sync: if the item names a category that
+            // doesn't exist yet, create it so the Categories tab always reflects
+            // what items actually use (and the admin dropdown can find it).
+            if (item.Category.Length > 0
+                && await _categoryRepo.GetByNameAsync(item.Category) is null)
+            {
+                await _categoryRepo.AddAsync(new Category
+                {
+                    Name = item.Category,
+                    ShopId = _currentShop.ShopId,
+                    CreatedAt = DateTime.UtcNow.AddHours(2)
+                });
+            }
 
             if (item.Id == 0)
             {

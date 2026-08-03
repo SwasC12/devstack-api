@@ -8,5 +8,6 @@ public class Shop
     public string Name { get; set; } = string.Empty;
     public string Code { get; set; } = string.Empty; // short, uppercase, unique — typed at login
     public string? LogoUrl { get; set; } // owner-customisable branding, shown in the POS
+    public bool IsActive { get; set; } = true; // suspended shops can't sign in (platform lifecycle)
     public DateTime CreatedAt { get; set; }
 }

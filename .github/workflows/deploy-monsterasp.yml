@@ -41,12 +41,25 @@ jobs:
         shell: pwsh
         env:
           DB_PASSWORD: ${{ secrets.MONSTER_DB_PASSWORD }}
+          JWT_KEY: ${{ secrets.MONSTER_JWT_KEY }}
+          CLOUDINARY_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
+          CLOUDINARY_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
         run: |
           $path = "published/appsettings.json"
           $json = Get-Content $path -Raw | ConvertFrom-Json
           $json.ConnectionStrings.DefaultConnection = "Server=db61580.databaseasp.net;Database=db61580;Uid=db61580;Pwd=$env:DB_PASSWORD;Encrypt=False;TrustServerCertificate=True;MultipleActiveResultSets=True;"
+          # Jwt:Key — if a MONSTER_JWT_KEY secret exists, use it; otherwise keep
+          # the committed dev key (works, but set the secret before real tenants).
+          if ($env:JWT_KEY) { $json.Jwt.Key = $env:JWT_KEY }
+          # Cloudinary admin credentials — REQUIRED for server-side image cleanup
+          # (deleting a menu item destroys its Cloudinary image). Without them
+          # the destroy call silently no-ops. Set the secrets, not values in git.
+          if ($env:CLOUDINARY_KEY) { $json.Cloudinary.ApiKey = $env:CLOUDINARY_KEY }
+          if ($env:CLOUDINARY_SECRET) { $json.Cloudinary.ApiSecret = $env:CLOUDINARY_SECRET }
           $json | ConvertTo-Json -Depth 10 | Set-Content $path
           Write-Host "Password length seen by workflow:" $env:DB_PASSWORD.Length
+          Write-Host "JWT key injected:" [bool]$env:JWT_KEY
+          Write-Host "Cloudinary creds injected:" ([bool]$env:CLOUDINARY_KEY -and [bool]$env:CLOUDINARY_SECRET)
 
       # Turn on ASP.NET Core Module stdout logging + detailed errors so any
       # startup crash writes a readable reason to /wwwroot/logs/ (viewable over FTP)
