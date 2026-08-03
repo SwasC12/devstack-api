@@ -65,4 +65,37 @@ public class ShiftsController : ControllerBase
         await _db.SaveChangesAsync();
         return Ok();
     }
+
+    // GET /api/shifts/summary — the caller's latest shift with its sales
+    // (orders attributed to them, voided excluded). Shown at clock-out.
+    [HttpGet("summary")]
+    public async Task<ActionResult> GetSummary()
+    {
+        var shift = await _db.Shifts
+            .Where(s => s.UserId == UserId)
+            .OrderByDescending(s => s.StartTime)
+            .FirstOrDefaultAsync();
+        if (shift is null) return Ok(new { shift = (object?)null, orderCount = 0, itemCount = 0, revenue = 0m, averageOrder = 0m });
+
+        var end = shift.EndTime ?? DateTime.UtcNow.AddHours(2);
+        var orders = await _db.Orders
+            .Where(o => o.UserId == UserId
+                && o.CreatedAt >= shift.StartTime
+                && o.CreatedAt <= end
+                && o.VoidedAt == null)
+            .Include(o => o.Items)
+            .ToListAsync();
+
+        var itemCount = orders.Sum(o => o.Items.Sum(i => i.Quantity));
+        var revenue = orders.Sum(o => o.Total);
+
+        return Ok(new
+        {
+            shift = new { shift.Id, shift.StartTime, shift.EndTime, IsActive = shift.EndTime is null },
+            orderCount = orders.Count,
+            itemCount,
+            revenue,
+            averageOrder = orders.Count > 0 ? revenue / orders.Count : 0m
+        });
+    }
 }

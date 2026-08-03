@@ -42,6 +42,14 @@ public class DevStackDataModel : DbContext
             .Property(o => o.Total)
             .HasPrecision(18, 2);
 
+        modelBuilder.Entity<Order>()
+            .Property(o => o.AmountReceived)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Order>()
+            .Property(o => o.ChangeGiven)
+            .HasPrecision(18, 2);
+
         modelBuilder.Entity<OrderItem>()
             .Property(i => i.Price)
             .HasPrecision(18, 2);

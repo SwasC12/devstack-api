@@ -20,7 +20,7 @@ public class OrdersController : ControllerBase
         _currentShop = currentShop;
     }
 
-    public record PlaceOrderRequest(List<OrderItemRequest> Items);
+    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null);
     public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity);
     public record VoidOrderRequest(string Reason);
 
@@ -46,11 +46,13 @@ public class OrdersController : ControllerBase
             return BadRequest(new { error = "Order is empty." });
 
         var userId = int.Parse(User.FindFirstValue("userId")!);
+        var method = request.PaymentMethod?.Trim().ToLowerInvariant() == "card" ? "card" : "cash";
         var order = new Order
         {
             CreatedAt = DateTime.UtcNow.AddHours(2),
             ShopId = _currentShop.ShopId,
             UserId = userId,
+            PaymentMethod = method,
             Items = []
         };
 
@@ -94,6 +96,25 @@ public class OrdersController : ControllerBase
         }
 
         order.Total = order.Items.Sum(i => i.Price * i.Quantity);
+
+        // Cash: the tendered amount must cover the total; change is computed
+        // server-side, never trusted from the client.
+        if (method == "cash")
+        {
+            if (request.AmountReceived is null || request.AmountReceived < 0)
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = "Cash payment needs the amount received." });
+            }
+            if (request.AmountReceived < order.Total)
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = "Amount received is less than the total." });
+            }
+            order.AmountReceived = request.AmountReceived;
+            order.ChangeGiven = request.AmountReceived - order.Total;
+        }
+
         _db.Orders.Add(order);
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
@@ -120,6 +141,9 @@ public class OrdersController : ControllerBase
             o.ShopId,
             o.UserId,
             CashierName = o.UserId is not null && users.TryGetValue(o.UserId.Value, out var name) ? name : null,
+            o.PaymentMethod,
+            o.AmountReceived,
+            o.ChangeGiven,
             o.VoidedAt,
             o.VoidedByUserId,
             o.VoidReason,
