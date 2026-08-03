@@ -9,9 +9,8 @@ namespace DevStack.API.WebService.Controllers;
 // binding, etc.). The route "api/menuitems" comes from the class name via
 // [controller] = "MenuItems" (MVC strips the "Controller" suffix, lowercased).
 //
-// GET stays public (the customer menu reads it). The write endpoints are
-// admin-only: prices, stock and availability are the owner's domain, and
-// leaving them open lets anyone rewrite a shop's catalogue.
+// Everything here is authenticated now — the public customer menu is gone, so
+// the POS is the only consumer. Writes stay admin-only.
 //
 // Two write-side endpoints only, by design:
 //   PUT    api/menuitems      → Write  (creates when Id == 0, otherwise edits)
@@ -20,6 +19,7 @@ namespace DevStack.API.WebService.Controllers;
 // sending the same item twice lands the same state.
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class MenuItemsController : ControllerBase
 {
     // The controller depends only on the LOGIC layer's interface. It knows
