@@ -26,8 +26,10 @@ public class ShiftsController : ControllerBase
     [HttpGet("active")]
     public async Task<ActionResult> GetActive()
     {
+        // NOTE: filter on EndTime, never on the computed Shift.IsActive — EF
+        // can't translate the CLR getter to SQL and every shift query would 500.
         var shift = await _db.Shifts
-            .Where(s => s.UserId == UserId && s.IsActive)
+            .Where(s => s.UserId == UserId && s.EndTime == null)
             .OrderByDescending(s => s.StartTime)
             .FirstOrDefaultAsync();
 
@@ -40,7 +42,7 @@ public class ShiftsController : ControllerBase
     public async Task<ActionResult> Start()
     {
         // End any existing active shift first
-        var active = await _db.Shifts.Where(s => s.UserId == UserId && s.IsActive).ToListAsync();
+        var active = await _db.Shifts.Where(s => s.UserId == UserId && s.EndTime == null).ToListAsync();
         foreach (var s in active) s.EndTime = DateTime.UtcNow.AddHours(2);
 
         var shift = new Shift { UserId = UserId, StartTime = DateTime.UtcNow.AddHours(2), ShopId = _currentShop.ShopId };
@@ -53,7 +55,7 @@ public class ShiftsController : ControllerBase
     public async Task<IActionResult> End()
     {
         var shift = await _db.Shifts
-            .Where(s => s.UserId == UserId && s.IsActive)
+            .Where(s => s.UserId == UserId && s.EndTime == null)
             .OrderByDescending(s => s.StartTime)
             .FirstOrDefaultAsync();
 
