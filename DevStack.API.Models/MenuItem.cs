@@ -13,4 +13,7 @@ public class MenuItem
     public int StockQuantity { get; set; } = 0;
     public DateTime CreatedAt { get; set; }
     public int ShopId { get; set; }
+
+    // Drink sizes (Small/Medium/Large...). Empty = sells at base Price only.
+    public List<MenuSize> Sizes { get; set; } = [];
 }

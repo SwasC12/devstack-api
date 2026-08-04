@@ -18,10 +18,10 @@ public class MenuItemRepository : IMenuItemRepository
     }
 
     public async Task<List<MenuItem>> GetAllAsync() =>
-        await _db.MenuItems.OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
+        await _db.MenuItems.Include(m => m.Sizes).OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
 
     public async Task<MenuItem?> GetByIdAsync(int id) =>
-        await _db.MenuItems.FindAsync(id);
+        await _db.MenuItems.Include(m => m.Sizes).FirstOrDefaultAsync(m => m.Id == id);
 
     public async Task<MenuItem> AddAsync(MenuItem item)
     {
@@ -32,7 +32,7 @@ public class MenuItemRepository : IMenuItemRepository
 
     public async Task<MenuItem?> UpdateAsync(MenuItem item)
     {
-        var existing = await _db.MenuItems.FindAsync(item.Id);
+        var existing = await _db.MenuItems.Include(m => m.Sizes).FirstOrDefaultAsync(m => m.Id == item.Id);
         if (existing is null) return null;
 
         // Copy the incoming values onto the tracked entity, then save.
@@ -45,6 +45,30 @@ public class MenuItemRepository : IMenuItemRepository
         existing.ImagePublicId = item.ImagePublicId;
         existing.IsAvailable = item.IsAvailable;
         existing.StockQuantity = item.StockQuantity;
+
+        // Reconcile sizes: keep matching ids (update price/name), add new ones,
+        // drop the ones the client removed. Deleting a size is safe mid-day -
+        // existing order lines keep their SizeName/price snapshot.
+        var incoming = item.Sizes ?? [];
+        existing.Sizes.RemoveAll(s => incoming.All(n => n.Id != s.Id));
+        foreach (var size in incoming)
+        {
+            var match = existing.Sizes.FirstOrDefault(s => s.Id == size.Id && size.Id != 0);
+            if (match is not null)
+            {
+                match.Name = size.Name;
+                match.Price = size.Price;
+            }
+            else
+            {
+                existing.Sizes.Add(new MenuSize
+                {
+                    MenuItemId = existing.Id,
+                    Name = size.Name,
+                    Price = size.Price
+                });
+            }
+        }
 
         await _db.SaveChangesAsync();
         return existing;

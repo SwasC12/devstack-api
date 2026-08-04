@@ -21,7 +21,7 @@ public class OrdersController : ControllerBase
     }
 
     public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null);
-    public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity);
+    public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null);
     public record VoidOrderRequest(string Reason);
 
     // POST /api/orders — place an order. Authorized so the order is tied to the
@@ -36,10 +36,11 @@ public class OrdersController : ControllerBase
     [Authorize]
     public async Task<ActionResult<Order>> PlaceOrder(PlaceOrderRequest request)
     {
-        // Aggregate per menu item so the stock check holds even if the same
-        // item appears more than once in the payload.
+        // Aggregate per (menu item, size) so the stock check holds even if the
+        // same item appears more than once in the payload - and so Small and
+        // Large Cappuccino stay separate lines.
         var quantities = request.Items
-            .GroupBy(i => i.MenuItemId)
+            .GroupBy(i => (i.MenuItemId, i.SizeId))
             .ToDictionary(g => g.Key, g => g.Sum(i => i.Quantity));
 
         if (quantities.Count == 0)
@@ -58,9 +59,9 @@ public class OrdersController : ControllerBase
 
         await using var tx = await _db.Database.BeginTransactionAsync();
 
-        foreach (var (menuItemId, quantity) in quantities)
+        foreach (var ((menuItemId, sizeId), quantity) in quantities)
         {
-            var menuItem = await _db.MenuItems.FindAsync(menuItemId);
+            var menuItem = await _db.MenuItems.Include(m => m.Sizes).FirstOrDefaultAsync(m => m.Id == menuItemId);
             if (menuItem is null)
             {
                 await tx.RollbackAsync();
@@ -70,6 +71,25 @@ public class OrdersController : ControllerBase
             {
                 await tx.RollbackAsync();
                 return BadRequest(new { error = $"'{menuItem.Name}' is no longer available." });
+            }
+
+            // Size rules: sized items MUST be ordered with one of their sizes
+            // (price comes from the size); single-price items must NOT carry one.
+            MenuSize? size = null;
+            if (menuItem.Sizes.Count > 0)
+            {
+                size = sizeId is null ? null : menuItem.Sizes.FirstOrDefault(s => s.Id == sizeId);
+                if (size is null)
+                {
+                    await tx.RollbackAsync();
+                    var opts = string.Join(", ", menuItem.Sizes.Select(s => s.Name));
+                    return BadRequest(new { error = $"'{menuItem.Name}' needs a size ({opts})." });
+                }
+            }
+            else if (sizeId is not null)
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = $"'{menuItem.Name}' has no sizes to select." });
             }
 
             // Atomic check-and-decrement: the UPDATE only affects the row if
@@ -86,12 +106,16 @@ public class OrdersController : ControllerBase
             }
 
             // Server-side snapshot: DB price + DB name, never the client's.
+            // Sized items snapshot the chosen size too, so receipts and reports
+            // stay correct even if the size is later renamed or deleted.
             order.Items.Add(new OrderItem
             {
                 MenuItemId = menuItemId,
                 Name = menuItem.Name,
-                Price = menuItem.Price,
-                Quantity = quantity
+                Price = size?.Price ?? menuItem.Price,
+                Quantity = quantity,
+                SizeId = size?.Id,
+                SizeName = size?.Name
             });
         }
 
@@ -169,7 +193,7 @@ public class OrdersController : ControllerBase
             o.VoidedAt,
             o.VoidedByUserId,
             o.VoidReason,
-            Items = o.Items.Select(i => new { i.Id, i.MenuItemId, i.Name, i.Price, i.Quantity })
+            Items = o.Items.Select(i => new { i.Id, i.MenuItemId, i.Name, i.Price, i.Quantity, i.SizeId, i.SizeName })
         }));
     }
 
@@ -296,7 +320,7 @@ public class OrdersController : ControllerBase
 
         var topItems = live
             .SelectMany(o => o.Items)
-            .GroupBy(i => i.Name)
+            .GroupBy(i => i.SizeName is null ? i.Name : $"{i.Name} ({i.SizeName})")
             .Select(g => new { Name = g.Key, Quantity = g.Sum(i => i.Quantity), Revenue = g.Sum(i => i.Price * i.Quantity) })
             .OrderByDescending(g => g.Quantity)
             .Take(10)

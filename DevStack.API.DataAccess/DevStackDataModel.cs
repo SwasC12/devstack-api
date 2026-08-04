@@ -21,6 +21,7 @@ public class DevStackDataModel : DbContext
     public DbSet<Shift> Shifts => Set<Shift>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Discount> Discounts => Set<Discount>();
+    public DbSet<MenuSize> MenuSizes => Set<MenuSize>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -68,5 +69,20 @@ public class DevStackDataModel : DbContext
             .HasOne<Order>()
             .WithMany(o => o.Items)
             .HasForeignKey(i => i.OrderId);
+
+        modelBuilder.Entity<MenuSize>()
+            .Property(s => s.Price)
+            .HasPrecision(18, 2);
+
+        // Sizes live and die with their item; an item's sizes are its own.
+        modelBuilder.Entity<MenuSize>()
+            .HasOne<MenuItem>()
+            .WithMany(m => m.Sizes)
+            .HasForeignKey(s => s.MenuItemId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<MenuSize>()
+            .HasIndex(s => new { s.MenuItemId, s.Name })
+            .IsUnique();
     }
 }

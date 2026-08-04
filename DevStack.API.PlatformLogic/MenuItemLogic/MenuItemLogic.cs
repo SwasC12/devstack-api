@@ -76,6 +76,23 @@ public class MenuItemLogic : IMenuItemLogic
             item.Category = item.Category.Trim();
             if (item.Price < 0) item.Price = 0;
 
+            // Sizes: trim names, clamp prices, enforce sanity limits. An item
+            // with sizes sells at size prices only - the base Price is ignored
+            // by the order path once sizes exist.
+            var sizes = item.Sizes ?? [];
+            if (sizes.Count > 6)
+                throw new ArgumentException("An item can have at most 6 sizes.");
+            var seen = new HashSet<string>();
+            foreach (var s in sizes)
+            {
+                s.Name = s.Name.Trim();
+                if (s.Name.Length == 0)
+                    throw new ArgumentException("Every size needs a name.");
+                if (!seen.Add(s.Name.ToLowerInvariant()))
+                    throw new ArgumentException($"Duplicate size '{s.Name}'.");
+                if (s.Price < 0) s.Price = 0;
+            }
+
             // Items always belong to the current shop; the client can't change it.
             item.ShopId = _currentShop.ShopId;
 
