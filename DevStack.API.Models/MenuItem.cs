@@ -16,4 +16,8 @@ public class MenuItem
 
     // Drink sizes (Small/Medium/Large...). Empty = sells at base Price only.
     public List<MenuSize> Sizes { get; set; } = [];
+
+    // Modifier groups (Milk, Extras...). Each group holds its options with
+    // price deltas. Empty = plain item.
+    public List<ModifierGroup> ModifierGroups { get; set; } = [];
 }

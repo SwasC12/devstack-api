@@ -24,6 +24,9 @@ public class DevStackDataModel : DbContext
     public DbSet<MenuSize> MenuSizes => Set<MenuSize>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<PushToken> PushTokens => Set<PushToken>();
+    public DbSet<ModifierGroup> ModifierGroups => Set<ModifierGroup>();
+    public DbSet<Modifier> Modifiers => Set<Modifier>();
+    public DbSet<OrderItemModifier> OrderItemModifiers => Set<OrderItemModifier>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -96,5 +99,31 @@ public class DevStackDataModel : DbContext
 
         modelBuilder.Entity<PushToken>()
             .HasIndex(t => t.UserId);
+
+        modelBuilder.Entity<Modifier>()
+            .Property(m => m.PriceDelta)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<ModifierGroup>()
+            .HasMany(g => g.Modifiers)
+            .WithOne()
+            .HasForeignKey(m => m.ModifierGroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<ModifierGroup>()
+            .HasOne<MenuItem>()
+            .WithMany(m => m.ModifierGroups)
+            .HasForeignKey(g => g.MenuItemId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<OrderItemModifier>()
+            .Property(m => m.PriceDelta)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<OrderItemModifier>()
+            .HasOne<OrderItem>()
+            .WithMany(i => i.Modifiers)
+            .HasForeignKey(m => m.OrderItemId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

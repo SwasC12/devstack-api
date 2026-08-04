@@ -21,6 +21,11 @@ public class Order
     public string? DiscountName { get; set; }
     public decimal DiscountAmount { get; set; } // 0 when no discount
 
+    // Optional customer + order-level note (collection, delivery, etc.).
+    public string? CustomerName { get; set; }
+    public string? CustomerPhone { get; set; }
+    public string? Notes { get; set; }
+
     // Voiding: once set, the order is excluded from revenue and its stock is
     // restored. One-way door fix — an order can be voided, not edited.
     public DateTime? VoidedAt { get; set; }

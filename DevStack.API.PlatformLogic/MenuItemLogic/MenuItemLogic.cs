@@ -93,6 +93,33 @@ public class MenuItemLogic : IMenuItemLogic
                 if (s.Price < 0) s.Price = 0;
             }
 
+            // Modifier groups: names unique, options unique per group, deltas
+            // clamped, sane limits.
+            var groups = item.ModifierGroups ?? [];
+            if (groups.Count > 5)
+                throw new ArgumentException("An item can have at most 5 modifier groups.");
+            var groupNames = new HashSet<string>();
+            foreach (var g in groups)
+            {
+                g.Name = g.Name.Trim();
+                if (g.Name.Length == 0)
+                    throw new ArgumentException("Every modifier group needs a name.");
+                if (!groupNames.Add(g.Name.ToLowerInvariant()))
+                    throw new ArgumentException($"Duplicate modifier group '{g.Name}'.");
+                if (g.Modifiers.Count > 10)
+                    throw new ArgumentException($"Group '{g.Name}' can have at most 10 options.");
+                var modNames = new HashSet<string>();
+                foreach (var m in g.Modifiers)
+                {
+                    m.Name = m.Name.Trim();
+                    if (m.Name.Length == 0)
+                        throw new ArgumentException($"Every option in '{g.Name}' needs a name.");
+                    if (!modNames.Add(m.Name.ToLowerInvariant()))
+                        throw new ArgumentException($"Duplicate option '{m.Name}' in '{g.Name}'.");
+                    if (m.PriceDelta < 0) m.PriceDelta = 0;
+                }
+            }
+
             // Items always belong to the current shop; the client can't change it.
             item.ShopId = _currentShop.ShopId;
 

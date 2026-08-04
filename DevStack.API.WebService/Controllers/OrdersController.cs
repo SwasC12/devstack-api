@@ -20,8 +20,8 @@ public class OrdersController : ControllerBase
         _currentShop = currentShop;
     }
 
-    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null);
-    public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null);
+    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null);
+    public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null, string? Note = null, List<int>? ModifierIds = null);
     public record VoidOrderRequest(string Reason);
 
     // POST /api/orders — place an order. Authorized so the order is tied to the
@@ -36,14 +36,15 @@ public class OrdersController : ControllerBase
     [Authorize]
     public async Task<ActionResult<Order>> PlaceOrder(PlaceOrderRequest request)
     {
-        // Aggregate per (menu item, size) so the stock check holds even if the
-        // same item appears more than once in the payload - and so Small and
-        // Large Cappuccino stay separate lines.
-        var quantities = request.Items
-            .GroupBy(i => (i.MenuItemId, i.SizeId))
-            .ToDictionary(g => g.Key, g => g.Sum(i => i.Quantity));
+        // Aggregate per (item, size, modifier set) so distinct configurations
+        // stay separate lines and the stock check holds per configuration.
+        static string ModsKey(List<int>? ids) => string.Join(",", (ids ?? []).OrderBy(x => x));
+        var groups = request.Items
+            .GroupBy(i => (i.MenuItemId, i.SizeId, ModsKey(i.ModifierIds)))
+            .Select(g => (Key: g.Key, Qty: g.Sum(i => i.Quantity), Line: g.First()))
+            .ToList();
 
-        if (quantities.Count == 0)
+        if (groups.Count == 0)
             return BadRequest(new { error = "Order is empty." });
 
         var userId = int.Parse(User.FindFirstValue("userId")!);
@@ -54,14 +55,21 @@ public class OrdersController : ControllerBase
             ShopId = _currentShop.ShopId,
             UserId = userId,
             PaymentMethod = method,
-            Items = []
+            Items = [],
+            CustomerName = Trimmed(request.CustomerName, 100),
+            CustomerPhone = Trimmed(request.CustomerPhone, 50),
+            Notes = Trimmed(request.Notes, 1000)
         };
 
         await using var tx = await _db.Database.BeginTransactionAsync();
 
-        foreach (var ((menuItemId, sizeId), quantity) in quantities)
+        foreach (var (key, quantity, line) in groups)
         {
-            var menuItem = await _db.MenuItems.Include(m => m.Sizes).FirstOrDefaultAsync(m => m.Id == menuItemId);
+            var (menuItemId, sizeId, _) = key;
+            var menuItem = await _db.MenuItems
+                .Include(m => m.Sizes)
+                .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
+                .FirstOrDefaultAsync(m => m.Id == menuItemId);
             if (menuItem is null)
             {
                 await tx.RollbackAsync();
@@ -92,6 +100,34 @@ public class OrdersController : ControllerBase
                 return BadRequest(new { error = $"'{menuItem.Name}' has no sizes to select." });
             }
 
+            // Modifier rules: ids must belong to this item; single-choice groups
+            // take at most one. Prices come from the DB, never the client.
+            var modDeltas = 0m;
+            var modSnapshots = new List<OrderItemModifier>();
+            var requestedModIds = line.ModifierIds ?? [];
+            var knownModIds = menuItem.ModifierGroups.SelectMany(g => g.Modifiers.Select(m => m.Id)).ToHashSet();
+            if (requestedModIds.Any(id => !knownModIds.Contains(id)))
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = $"'{menuItem.Name}' has invalid modifiers." });
+            }
+            foreach (var group in menuItem.ModifierGroups)
+            {
+                var picked = requestedModIds.Where(id => group.Modifiers.Any(m => m.Id == id)).ToList();
+                if (picked.Count == 0) continue;
+                if (!group.IsMulti && picked.Count > 1)
+                {
+                    await tx.RollbackAsync();
+                    return BadRequest(new { error = $"Pick at most one option from '{group.Name}'." });
+                }
+                foreach (var modId in picked)
+                {
+                    var mod = group.Modifiers.First(m => m.Id == modId);
+                    modDeltas += mod.PriceDelta;
+                    modSnapshots.Add(new OrderItemModifier { GroupName = group.Name, Name = mod.Name, PriceDelta = mod.PriceDelta });
+                }
+            }
+
             // Atomic check-and-decrement: the UPDATE only affects the row if
             // enough stock remains right now, so concurrent orders can't both
             // grab the last one. Zero rows affected = stock ran out.
@@ -108,14 +144,17 @@ public class OrdersController : ControllerBase
             // Server-side snapshot: DB price + DB name, never the client's.
             // Sized items snapshot the chosen size too, so receipts and reports
             // stay correct even if the size is later renamed or deleted.
+            var unitPrice = (size?.Price ?? menuItem.Price) + modDeltas;
             order.Items.Add(new OrderItem
             {
                 MenuItemId = menuItemId,
                 Name = menuItem.Name,
-                Price = size?.Price ?? menuItem.Price,
+                Price = unitPrice,
                 Quantity = quantity,
                 SizeId = size?.Id,
-                SizeName = size?.Name
+                SizeName = size?.Name,
+                Note = Trimmed(line.Note, 500),
+                Modifiers = modSnapshots
             });
         }
 
@@ -171,7 +210,9 @@ public class OrdersController : ControllerBase
     [HttpGet]
     public async Task<ActionResult> GetOrders()
     {
-        var orders = await _db.Orders.Include(o => o.Items).OrderByDescending(o => o.CreatedAt).ToListAsync();
+        var orders = await _db.Orders
+            .Include(o => o.Items).ThenInclude(i => i.Modifiers)
+            .OrderByDescending(o => o.CreatedAt).ToListAsync();
 
         var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct().ToList();
         var users = await _db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.DisplayName);
@@ -181,6 +222,7 @@ public class OrdersController : ControllerBase
             o.Id,
             o.CreatedAt,
             o.Total,
+            VatAmount = Math.Round(o.Total * 15m / 115m, 2),
             o.ShopId,
             o.UserId,
             CashierName = o.UserId is not null && users.TryGetValue(o.UserId.Value, out var name) ? name : null,
@@ -190,10 +232,17 @@ public class OrdersController : ControllerBase
             o.DiscountId,
             o.DiscountName,
             o.DiscountAmount,
+            o.CustomerName,
+            o.CustomerPhone,
+            o.Notes,
             o.VoidedAt,
             o.VoidedByUserId,
             o.VoidReason,
-            Items = o.Items.Select(i => new { i.Id, i.MenuItemId, i.Name, i.Price, i.Quantity, i.SizeId, i.SizeName })
+            Items = o.Items.Select(i => new
+            {
+                i.Id, i.MenuItemId, i.Name, i.Price, i.Quantity, i.SizeId, i.SizeName, i.Note,
+                Modifiers = i.Modifiers.Select(m => new { m.GroupName, m.Name, m.PriceDelta })
+            })
         }));
     }
 
@@ -235,8 +284,16 @@ public class OrdersController : ControllerBase
     [HttpGet("{id:int}")]
     public async Task<ActionResult<Order>> GetOrder(int id)
     {
-        var order = await _db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
+        var order = await _db.Orders
+            .Include(o => o.Items).ThenInclude(i => i.Modifiers)
+            .FirstOrDefaultAsync(o => o.Id == id);
         return order is null ? NotFound() : Ok(order);
+    }
+
+    private static string? Trimmed(string? value, int max)
+    {
+        var v = value?.Trim();
+        return string.IsNullOrEmpty(v) ? null : (v.Length > max ? v[..max] : v);
     }
 
     // GET /api/orders/analytics?days=14 — admin only. Owner analytics: daily

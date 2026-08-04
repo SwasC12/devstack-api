@@ -12,4 +12,8 @@ public class OrderItem
     // Size snapshot for sized items (null for legacy/single-price lines).
     public int? SizeId { get; set; }
     public string? SizeName { get; set; }
+
+    // Per-line customer note ("no foam") and modifier snapshots.
+    public string? Note { get; set; }
+    public List<OrderItemModifier> Modifiers { get; set; } = [];
 }

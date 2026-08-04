@@ -18,10 +18,14 @@ public class MenuItemRepository : IMenuItemRepository
     }
 
     public async Task<List<MenuItem>> GetAllAsync() =>
-        await _db.MenuItems.Include(m => m.Sizes).OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
+        await _db.MenuItems.Include(m => m.Sizes)
+            .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
+            .OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
 
     public async Task<MenuItem?> GetByIdAsync(int id) =>
-        await _db.MenuItems.Include(m => m.Sizes).FirstOrDefaultAsync(m => m.Id == id);
+        await _db.MenuItems.Include(m => m.Sizes)
+            .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
+            .FirstOrDefaultAsync(m => m.Id == id);
 
     public async Task<MenuItem> AddAsync(MenuItem item)
     {
@@ -32,7 +36,10 @@ public class MenuItemRepository : IMenuItemRepository
 
     public async Task<MenuItem?> UpdateAsync(MenuItem item)
     {
-        var existing = await _db.MenuItems.Include(m => m.Sizes).FirstOrDefaultAsync(m => m.Id == item.Id);
+        var existing = await _db.MenuItems
+            .Include(m => m.Sizes)
+            .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
+            .FirstOrDefaultAsync(m => m.Id == item.Id);
         if (existing is null) return null;
 
         // Copy the incoming values onto the tracked entity, then save.
@@ -67,6 +74,42 @@ public class MenuItemRepository : IMenuItemRepository
                     Name = size.Name,
                     Price = size.Price
                 });
+            }
+        }
+
+        // Reconcile modifier groups (and their options) the same way: keep
+        // matching ids, add new, drop removed. Deleting a group mid-day is safe -
+        // order lines keep their snapshots.
+        var incomingGroups = item.ModifierGroups ?? [];
+        existing.ModifierGroups.RemoveAll(g => incomingGroups.All(n => n.Id != g.Id));
+        foreach (var group in incomingGroups)
+        {
+            var match = existing.ModifierGroups.FirstOrDefault(g => g.Id == group.Id && group.Id != 0);
+            if (match is not null)
+            {
+                match.Name = group.Name;
+                match.IsMulti = group.IsMulti;
+            }
+            else
+            {
+                match = new ModifierGroup { MenuItemId = existing.Id, Name = group.Name, IsMulti = group.IsMulti };
+                existing.ModifierGroups.Add(match);
+            }
+
+            var incomingMods = group.Modifiers ?? [];
+            match.Modifiers.RemoveAll(m => incomingMods.All(n => n.Id != m.Id));
+            foreach (var mod in incomingMods)
+            {
+                var modMatch = match.Modifiers.FirstOrDefault(m => m.Id == mod.Id && mod.Id != 0);
+                if (modMatch is not null)
+                {
+                    modMatch.Name = mod.Name;
+                    modMatch.PriceDelta = mod.PriceDelta;
+                }
+                else
+                {
+                    match.Modifiers.Add(new Modifier { Name = mod.Name, PriceDelta = mod.PriceDelta });
+                }
             }
         }
 
