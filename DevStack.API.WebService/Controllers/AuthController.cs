@@ -100,6 +100,63 @@ public class AuthController : ControllerBase
 
     // ── Staff PIN login (fast cashier sign-in) ──────────────────────────────
 
+    // POST api/auth/superadmin-reset - platform recovery hatch: resets the
+    // superadmin password without a superadmin login or DB access. Guarded by a
+    // static ops key from config (Ops:Key / env Ops__Key) that is never a login
+    // password itself. The fresh one-time password is returned ONCE; only its
+    // bcrypt hash lands in the database, and the old refresh-token chain is
+    // burned so any existing superadmin sessions die.
+    [HttpPost("superadmin-reset")]
+    public async Task<ActionResult> SuperadminReset()
+    {
+        var key = ThrottleKey("ops-reset");
+        if (_throttle.IsLockedOut(key))
+            return StatusCode(StatusCodes.Status423Locked, new { error = "Too many failed attempts. Try again in a few minutes." });
+
+        var opsKey = _config["Ops:Key"];
+        if (string.IsNullOrEmpty(opsKey))
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Ops key is not configured on the server." });
+
+        var presented = Request.Headers["X-Ops-Key"].ToString();
+        var presentedBytes = System.Text.Encoding.UTF8.GetBytes(presented);
+        var opsBytes = System.Text.Encoding.UTF8.GetBytes(opsKey);
+        var matches = presentedBytes.Length > 0
+                      && presentedBytes.Length == opsBytes.Length
+                      && CryptographicOperations.FixedTimeEquals(presentedBytes, opsBytes);
+        if (!matches)
+        {
+            _throttle.RecordFailure(key);
+            return Unauthorized(new { error = "Invalid ops key." });
+        }
+
+        _throttle.Reset(key);
+        var superadmin = await _db.Users.FirstOrDefaultAsync(u => u.Role == "superadmin");
+        if (superadmin is null)
+            return NotFound(new { error = "No superadmin account exists to reset." });
+
+        var password = GeneratePassword();
+        superadmin.PasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+
+        // Reset = kill existing sessions: burn the superadmin's whole refresh chain.
+        await _db.RefreshTokens
+            .Where(t => t.UserId == superadmin.Id && t.RevokedAtUtc == null)
+            .ExecuteUpdateAsync(t => t.SetProperty(x => x.RevokedAtUtc, DateTime.UtcNow));
+
+        await _db.SaveChangesAsync();
+
+        return Ok(new { username = superadmin.Username, displayName = superadmin.DisplayName, password });
+    }
+
+    // Random 18-char password, same rules as the platform's one-time seeds.
+    private static string GeneratePassword(int length = 18)
+    {
+        const string chars = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*";
+        var bytes = RandomNumberGenerator.GetBytes(length);
+        var sb = new System.Text.StringBuilder(length);
+        for (var i = 0; i < length; i++) sb.Append(chars[bytes[i] % chars.Length]);
+        return sb.ToString();
+    }
+
     [HttpPost("pin-login")]
     public async Task<ActionResult<LoginResponse>> PinLogin(PinLoginRequest request)
     {
