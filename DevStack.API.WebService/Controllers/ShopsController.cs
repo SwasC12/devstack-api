@@ -113,6 +113,7 @@ public class ShopsController : ControllerBase
     // no email system, so the caller (platform owner) relays it to the owner.
     // The returned password is intentionally not stored anywhere — only its
     // bcrypt hash lands in the database.
+    //secrete
     [Authorize(Roles = "superadmin")]
     [HttpPost("{id:int}/reset-admin-password")]
     public async Task<ActionResult> ResetAdminPassword(int id)
