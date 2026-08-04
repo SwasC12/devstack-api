@@ -21,7 +21,7 @@ public class ShopsController : ControllerBase
     public ShopsController(DevStackDataModel db) => _db = db;
 
     public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName);
-    public record UpdateShopRequest(string Name, string? LogoUrl);
+    public record UpdateShopRequest(string Name, string? LogoUrl, string? ReceiptQrUrl);
     public record SetShopStatusRequest(bool IsActive);
 
     // GET api/shops — superadmin: list all shops with lightweight usage stats.
@@ -157,7 +157,7 @@ public class ShopsController : ControllerBase
         var shop = await _db.Shops.FindAsync(shopId);
         if (shop is null) return NotFound();
 
-        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl });
+        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl });
     }
 
     // PUT api/shops/me — shop admin (owner): update the current shop's branding.
@@ -177,8 +177,9 @@ public class ShopsController : ControllerBase
 
         shop.Name = name;
         shop.LogoUrl = request.LogoUrl?.Trim();
+        shop.ReceiptQrUrl = string.IsNullOrWhiteSpace(request.ReceiptQrUrl) ? null : request.ReceiptQrUrl.Trim();
         await _db.SaveChangesAsync();
 
-        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl });
+        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl });
     }
 }
