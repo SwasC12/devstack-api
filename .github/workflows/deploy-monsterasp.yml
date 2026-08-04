@@ -1,5 +1,5 @@
 # Builds the API and deploys it to MonsterASP.NET via FTP on every push to main.
-# All credentials come from GitHub repository Secrets — nothing sensitive lives
+# All credentials come from GitHub repository Secrets Ã¢â‚¬â€ nothing sensitive lives
 # in this file or in the repo.
 name: Deploy to MonsterASP
 
@@ -35,7 +35,7 @@ jobs:
       # pulled from a secret. Keeps the prod connection string out of git.
       # Build the connection string HERE from fixed, non-secret parts (server,
       # db, user are not sensitive) + the password from a secret. This way the
-      # only thing in a secret is the raw password — no keywords/spaces to get
+      # only thing in a secret is the raw password Ã¢â‚¬â€ no keywords/spaces to get
       # wrong. Password read via env var so special characters can't break parsing.
       - name: Inject production connection string
         shell: pwsh
@@ -45,26 +45,32 @@ jobs:
           CLOUDINARY_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
           CLOUDINARY_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
           OPS_KEY: ${{ secrets.OPS_KEY }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
           $path = "published/appsettings.json"
           $json = Get-Content $path -Raw | ConvertFrom-Json
           $json.ConnectionStrings.DefaultConnection = "Server=db61580.databaseasp.net;Database=db61580;Uid=db61580;Pwd=$env:DB_PASSWORD;Encrypt=False;TrustServerCertificate=True;MultipleActiveResultSets=True;"
-          # Jwt:Key — if a MONSTER_JWT_KEY secret exists, use it; otherwise keep
+          # Jwt:Key Ã¢â‚¬â€ if a MONSTER_JWT_KEY secret exists, use it; otherwise keep
           # the committed dev key (works, but set the secret before real tenants).
           if ($env:JWT_KEY) { $json.Jwt.Key = $env:JWT_KEY }
-          # Cloudinary admin credentials — REQUIRED for server-side image cleanup
+          # Cloudinary admin credentials Ã¢â‚¬â€ REQUIRED for server-side image cleanup
           # (deleting a menu item destroys its Cloudinary image). Without them
           # the destroy call silently no-ops. Set the secrets, not values in git.
           if ($env:CLOUDINARY_KEY) { $json.Cloudinary.ApiKey = $env:CLOUDINARY_KEY }
           if ($env:CLOUDINARY_SECRET) { $json.Cloudinary.ApiSecret = $env:CLOUDINARY_SECRET }
-          # Ops key — guards POST /api/auth/superadmin-reset, the recovery hatch
+          # Ops key Ã¢â‚¬â€ guards POST /api/auth/superadmin-reset, the recovery hatch
           # for a lost superadmin password. Without it the endpoint returns 503.
           if ($env:OPS_KEY) { $json.Ops.Key = $env:OPS_KEY }
+          # Firebase service account JSON - lets the API send FCM pushes to
+          # owners' devices (superadmin broadcasts). Without it pushes are
+          # skipped; in-app notifications still work.
+          if ($env:FIREBASE_SERVICE_ACCOUNT) { $json.Firebase.ServiceAccountJson = $env:FIREBASE_SERVICE_ACCOUNT }
           $json | ConvertTo-Json -Depth 10 | Set-Content $path
           Write-Host "Password length seen by workflow:" $env:DB_PASSWORD.Length
           Write-Host "JWT key injected:" [bool]$env:JWT_KEY
           Write-Host "Cloudinary creds injected:" ([bool]$env:CLOUDINARY_KEY -and [bool]$env:CLOUDINARY_SECRET)
           Write-Host "Ops key injected:" [bool]$env:OPS_KEY
+          Write-Host "Firebase service account injected:" [bool]$env:FIREBASE_SERVICE_ACCOUNT
 
       # Turn on ASP.NET Core Module stdout logging + detailed errors so any
       # startup crash writes a readable reason to /wwwroot/logs/ (viewable over FTP)
@@ -91,7 +97,7 @@ jobs:
           Get-Content $path
 
       # Drop app_offline.htm so IIS/ANCM cleanly stops the app and releases its
-      # locks on native DLLs (e.g. Microsoft.Data.SqlClient.SNI.dll) — otherwise
+      # locks on native DLLs (e.g. Microsoft.Data.SqlClient.SNI.dll) Ã¢â‚¬â€ otherwise
       # FTP overwrite fails with "550 ... GetHandle: failure".
       - name: Take app offline
         run: |

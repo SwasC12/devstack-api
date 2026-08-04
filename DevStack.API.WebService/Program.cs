@@ -7,6 +7,7 @@ using DevStack.API.Models;
 using DevStack.API.PlatformLogic;
 using DevStack.API.PlatformLogic.CategoryLogic;
 using DevStack.API.PlatformLogic.MenuItemLogic;
+using DevStack.API.PlatformLogic.PushLogic;
 using DevStack.API.WebService;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
@@ -29,6 +30,7 @@ builder.Services.AddScoped<ICurrentShop, CurrentShopService>();
 // Brute-force defence: a per-IP cap on auth endpoints + a failed-attempt
 // lockout service. The "auth" policy is applied via [EnableRateLimiting].
 builder.Services.AddSingleton<IAuthThrottle, AuthThrottleService>();
+builder.Services.AddSingleton<IPushService, PushService>();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

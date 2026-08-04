@@ -22,6 +22,8 @@ public class DevStackDataModel : DbContext
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<Discount> Discounts => Set<Discount>();
     public DbSet<MenuSize> MenuSizes => Set<MenuSize>();
+    public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<PushToken> PushTokens => Set<PushToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -84,5 +86,15 @@ public class DevStackDataModel : DbContext
         modelBuilder.Entity<MenuSize>()
             .HasIndex(s => new { s.MenuItemId, s.Name })
             .IsUnique();
+
+        modelBuilder.Entity<Notification>()
+            .HasIndex(n => n.UserId);
+
+        modelBuilder.Entity<PushToken>()
+            .HasIndex(t => t.Token)
+            .IsUnique();
+
+        modelBuilder.Entity<PushToken>()
+            .HasIndex(t => t.UserId);
     }
 }
