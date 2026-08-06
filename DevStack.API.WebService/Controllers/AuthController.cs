@@ -39,7 +39,12 @@ public class AuthController : ControllerBase
     public record PinLoginRequest(string ShopCode, int UserId, string Pin);
     public record StaffRequest(string ShopCode);
     public record UpdateProfileRequest(string CurrentPassword, string Username, string DisplayName, string? NewPassword);
-    public record LoginResponse(string Token, string Username, string DisplayName, string Role, int? ShopId, string? ShopName, string? ShopCode);
+    public record RefreshRequest(string? RefreshToken);
+    public record LogoutRequest(string? RefreshToken);
+    // RefreshToken is only populated for native clients (X-Client: native) so
+    // the Capacitor app can persist it in device storage; the web UI keeps the
+    // HttpOnly-cookie-only model and never sees the raw value.
+    public record LoginResponse(string Token, string Username, string DisplayName, string Role, int? ShopId, string? ShopName, string? ShopCode, string? RefreshToken = null);
 
     // ── Shop staff login (password) ──────────────────────────────────────────
 
@@ -72,8 +77,8 @@ public class AuthController : ControllerBase
 
         _throttle.Reset(key);
         var access = CreateToken(user, shop);
-        IssueRefreshToken(user);
-        return Ok(BuildLoginResponse(access, user, shop));
+        var rawRefresh = IssueRefreshToken(user);
+        return Ok(BuildLoginResponse(access, user, shop, rawRefresh));
     }
 
     // ── Platform owner login ─────────────────────────────────────────────────
@@ -94,8 +99,8 @@ public class AuthController : ControllerBase
 
         _throttle.Reset(key);
         var access = CreateToken(user, null);
-        IssueRefreshToken(user);
-        return Ok(BuildLoginResponse(access, user, null));
+        var rawRefresh = IssueRefreshToken(user);
+        return Ok(BuildLoginResponse(access, user, null, rawRefresh));
     }
 
     // ── Staff PIN login (fast cashier sign-in) ──────────────────────────────
@@ -182,8 +187,8 @@ public class AuthController : ControllerBase
 
         _throttle.Reset(key);
         var access = CreateToken(user, shop);
-        IssueRefreshToken(user);
-        return Ok(BuildLoginResponse(access, user, shop));
+        var rawRefresh = IssueRefreshToken(user);
+        return Ok(BuildLoginResponse(access, user, shop, rawRefresh));
     }
 
     // Staff list for PIN sign-in — display names + roles only, gated by a valid
@@ -207,9 +212,13 @@ public class AuthController : ControllerBase
     // ── Token refresh ────────────────────────────────────────────────────────
 
     [HttpPost("refresh")]
-    public async Task<ActionResult<LoginResponse>> Refresh()
+    public async Task<ActionResult<LoginResponse>> Refresh(RefreshRequest request)
     {
+        // Cookie first (web UI); native app falls back to the token it stored
+        // in device storage, because WebView cookies don't reliably survive an
+        // app kill on all Android devices.
         var raw = Request.Cookies[RefreshCookieName];
+        if (string.IsNullOrEmpty(raw)) raw = request.RefreshToken;
         if (string.IsNullOrEmpty(raw)) return Unauthorized();
 
         var stored = await _db.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == HashToken(raw));
@@ -253,7 +262,7 @@ public class AuthController : ControllerBase
 
         // Rotate: revoke the used token and hand back a fresh one.
         stored.RevokedAtUtc = DateTime.UtcNow;
-        var replacement = CreateRefreshToken(user);
+        var (replacement, rawRefresh) = CreateRefreshToken(user);
         stored.ReplacedByTokenId = replacement.Id;
         await _db.SaveChangesAsync();
 
@@ -263,13 +272,14 @@ public class AuthController : ControllerBase
             .ExecuteDeleteAsync();
 
         var access = CreateToken(user, shop);
-        return Ok(BuildLoginResponse(access, user, shop));
+        return Ok(BuildLoginResponse(access, user, shop, rawRefresh));
     }
 
     [HttpPost("logout")]
-    public async Task<IActionResult> Logout()
+    public async Task<IActionResult> Logout(LogoutRequest request)
     {
         var raw = Request.Cookies[RefreshCookieName];
+        if (string.IsNullOrEmpty(raw)) raw = request.RefreshToken;
         if (!string.IsNullOrEmpty(raw))
         {
             var stored = await _db.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == HashToken(raw));
@@ -345,15 +355,20 @@ public class AuthController : ControllerBase
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    private LoginResponse BuildLoginResponse(string token, AppUser user, Shop? shop) =>
-        new(token, user.Username, user.DisplayName, user.Role, user.ShopId, shop?.Name, shop?.Code);
+    private LoginResponse BuildLoginResponse(string token, AppUser user, Shop? shop, string? rawRefresh = null) =>
+        new(token, user.Username, user.DisplayName, user.Role, user.ShopId, shop?.Name, shop?.Code,
+            IsNativeClient() ? rawRefresh : null);
+
+    // The Capacitor app identifies itself so the API hands back the raw refresh
+    // token in the response body (for device storage). Web clients never get it.
+    private bool IsNativeClient() => Request.Headers["X-Client"].ToString() == "native";
 
     // Lockout identity: caller's IP + the account they're trying, so failed
     // guesses for one user don't trip another user's lockout.
     private string ThrottleKey(string username) =>
         $"{HttpContext.Connection.RemoteIpAddress}|{username.Trim().ToLowerInvariant()}";
 
-    private void IssueRefreshToken(AppUser user)
+    private string IssueRefreshToken(AppUser user)
     {
         var raw = GenerateRefreshToken();
         var lifetime = user.Role == "cashier" ? TimeSpan.FromHours(12) : TimeSpan.FromDays(30);
@@ -368,11 +383,12 @@ public class AuthController : ControllerBase
         });
         _db.SaveChanges();
         SetRefreshCookie(raw, lifetime);
+        return raw;
     }
 
     // Creates a fresh RefreshToken row, returns it (caller links it as the
     // replacement), and sets the cookie. The raw value never touches storage.
-    private RefreshToken CreateRefreshToken(AppUser user)
+    private (RefreshToken Token, string Raw) CreateRefreshToken(AppUser user)
     {
         var raw = GenerateRefreshToken();
         var lifetime = user.Role == "cashier" ? TimeSpan.FromHours(12) : TimeSpan.FromDays(30);
@@ -386,7 +402,7 @@ public class AuthController : ControllerBase
         };
         _db.RefreshTokens.Add(token);
         SetRefreshCookie(raw, lifetime);
-        return token;
+        return (token, raw);
     }
 
     private void SetRefreshCookie(string rawToken, TimeSpan lifetime)
