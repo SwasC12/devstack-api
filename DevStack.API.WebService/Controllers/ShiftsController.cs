@@ -86,8 +86,15 @@ public class ShiftsController : ControllerBase
             .Include(o => o.Items)
             .ToListAsync();
 
+        var voidedCount = await _db.Orders.CountAsync(o => o.UserId == UserId
+            && o.CreatedAt >= shift.StartTime
+            && o.CreatedAt <= end
+            && o.VoidedAt != null);
+
         var itemCount = orders.Sum(o => o.Items.Sum(i => i.Quantity));
         var revenue = orders.Sum(o => o.Total);
+        var cashRevenue = orders.Where(o => o.PaymentMethod == "cash").Sum(o => o.Total);
+        var cardRevenue = revenue - cashRevenue;
 
         return Ok(new
         {
@@ -95,7 +102,10 @@ public class ShiftsController : ControllerBase
             orderCount = orders.Count,
             itemCount,
             revenue,
-            averageOrder = orders.Count > 0 ? revenue / orders.Count : 0m
+            averageOrder = orders.Count > 0 ? revenue / orders.Count : 0m,
+            cashRevenue,
+            cardRevenue,
+            voidedCount
         });
     }
 }

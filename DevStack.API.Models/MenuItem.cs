@@ -11,6 +11,8 @@ public class MenuItem
     public string? ImagePublicId { get; set; }
     public bool IsAvailable { get; set; } = true;
     public int StockQuantity { get; set; } = 0;
+    // Alert the shop owner (in-app + push) when stock drops to this level.
+    public int LowStockThreshold { get; set; } = 5;
     public DateTime CreatedAt { get; set; }
     public int ShopId { get; set; }
 
