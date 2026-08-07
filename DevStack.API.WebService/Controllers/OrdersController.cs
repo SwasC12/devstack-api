@@ -1,7 +1,6 @@
 using System.Security.Claims;
 using DevStack.API.DataAccess;
 using DevStack.API.Models;
-using DevStack.API.PlatformLogic.PushLogic;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,13 +13,11 @@ public class OrdersController : ControllerBase
 {
     private readonly DevStackDataModel _db;
     private readonly ICurrentShop _currentShop;
-    private readonly IPushService _push;
 
-    public OrdersController(DevStackDataModel db, ICurrentShop currentShop, IPushService push)
+    public OrdersController(DevStackDataModel db, ICurrentShop currentShop)
     {
         _db = db;
         _currentShop = currentShop;
-        _push = push;
     }
 
     public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null);
@@ -140,14 +137,16 @@ public class OrdersController : ControllerBase
                 .Where(m => m.Id == menuItemId && m.StockQuantity >= quantity)
                 .ExecuteUpdateAsync(s => s.SetProperty(m => m.StockQuantity, m => m.StockQuantity - quantity));
 
-            // Track anything that just crossed its low-stock threshold (the
+            // Track anything that just CROSSED its low-stock threshold (the
             // tracked entity is stale - ExecuteUpdate bypasses the change
-            // tracker, so read the post-decrement value fresh).
+            // tracker, so read the post-decrement value fresh). Alerting only
+            // on the crossing, not every sale, keeps the bell spam-free.
             if (updated > 0)
             {
                 var after = await _db.MenuItems.Where(m => m.Id == menuItemId)
                     .Select(m => new { m.Name, m.StockQuantity, m.LowStockThreshold }).FirstAsync();
-                if (after.StockQuantity <= after.LowStockThreshold)
+                if (after.StockQuantity <= after.LowStockThreshold
+                    && menuItem.StockQuantity > after.LowStockThreshold)
                     lowStockAlerts.Add((after.Name, after.StockQuantity));
             }
 
@@ -215,10 +214,9 @@ public class OrdersController : ControllerBase
 
         _db.Orders.Add(order);
 
-        // Low-stock alerts: one in-app notification per shop admin, plus a
-        // device push to each registered admin tablet/phone.
+        // Low-stock alerts: one in-app notification per shop admin (no FCM
+        // push - the bell in the admin UI is the delivery).
         List<Notification>? alertRows = null;
-        List<PushToken>? alertTokens = null;
         if (lowStockAlerts.Count > 0)
         {
             var admins = await _db.Users.Where(u => u.Role == "admin" && u.ShopId == order.ShopId).ToListAsync();
@@ -233,25 +231,11 @@ public class OrdersController : ControllerBase
                         alertRows.Add(new Notification { ShopId = order.ShopId, UserId = admin.Id, Title = "Low stock", Body = body, Type = "alert", CreatedAtUtc = now });
                 }
                 _db.Notifications.AddRange(alertRows);
-                var adminIds = admins.Select(a => a.Id).ToList();
-                alertTokens = await _db.PushTokens.Where(t => adminIds.Contains(t.UserId)).ToListAsync();
             }
         }
 
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
-
-        // Push is best-effort and never fails the order; dead tokens are dropped.
-        if (alertRows is not null && alertTokens is not null && alertTokens.Count > 0)
-        {
-            foreach (var token in alertTokens)
-            {
-                var row = alertRows.FirstOrDefault(r => r.UserId == token.UserId);
-                var ok = await _push.SendAsync(token, "Low stock", row?.Body ?? "An item is running low.", "alert", row?.Id);
-                if (ok == false) _db.PushTokens.Remove(token);
-            }
-            await _db.SaveChangesAsync();
-        }
 
         return CreatedAtAction(nameof(GetOrder), new { id = order.Id }, order);
     }

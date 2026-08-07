@@ -21,6 +21,8 @@ public class ShiftsController : ControllerBase
         _currentShop = currentShop;
     }
 
+    public record StartShiftRequest(decimal? StartingFloat = null);
+
     private int UserId => int.Parse(User.FindFirstValue("userId")!);
 
     [HttpGet("active")]
@@ -39,16 +41,16 @@ public class ShiftsController : ControllerBase
     }
 
     [HttpPost("start")]
-    public async Task<ActionResult> Start()
+    public async Task<ActionResult> Start(StartShiftRequest request)
     {
         // End any existing active shift first
         var active = await _db.Shifts.Where(s => s.UserId == UserId && s.EndTime == null).ToListAsync();
         foreach (var s in active) s.EndTime = DateTime.UtcNow.AddHours(2);
 
-        var shift = new Shift { UserId = UserId, StartTime = DateTime.UtcNow.AddHours(2), ShopId = _currentShop.ShopId };
+        var shift = new Shift { UserId = UserId, StartTime = DateTime.UtcNow.AddHours(2), ShopId = _currentShop.ShopId, StartingFloat = request.StartingFloat ?? 0m };
         _db.Shifts.Add(shift);
         await _db.SaveChangesAsync();
-        return Ok(new { id = shift.Id, startTime = shift.StartTime });
+        return Ok(new { id = shift.Id, startTime = shift.StartTime, startingFloat = shift.StartingFloat });
     }
 
     [HttpPost("end")]
@@ -98,14 +100,15 @@ public class ShiftsController : ControllerBase
 
         return Ok(new
         {
-            shift = new { shift.Id, shift.StartTime, shift.EndTime, IsActive = shift.EndTime is null },
+            shift = new { shift.Id, shift.StartTime, shift.EndTime, shift.StartingFloat, IsActive = shift.EndTime is null },
             orderCount = orders.Count,
             itemCount,
             revenue,
             averageOrder = orders.Count > 0 ? revenue / orders.Count : 0m,
             cashRevenue,
             cardRevenue,
-            voidedCount
+            voidedCount,
+            startingFloat = shift.StartingFloat
         });
     }
 }

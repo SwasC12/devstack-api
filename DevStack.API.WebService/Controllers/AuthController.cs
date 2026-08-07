@@ -37,6 +37,7 @@ public class AuthController : ControllerBase
     public record LoginRequest(string ShopCode, string Username, string Password);
     public record SuperadminLoginRequest(string Username, string Password);
     public record PinLoginRequest(string ShopCode, int UserId, string Pin);
+    public record VerifyPinRequest(string? Pin);
     public record StaffRequest(string ShopCode);
     public record UpdateProfileRequest(string CurrentPassword, string Username, string DisplayName, string? NewPassword);
     public record RefreshRequest(string? RefreshToken);
@@ -191,7 +192,31 @@ public class AuthController : ControllerBase
         return Ok(BuildLoginResponse(access, user, shop, rawRefresh));
     }
 
-    // Staff list for PIN sign-in — display names + roles only, gated by a valid
+    // POST api/auth/verify-pin - any signed-in user: is this the PIN of one
+    // of the shop's admins? Used for manager-approval actions (voiding an
+    // order). Same failed-attempt lockout as pin-login, keyed per PIN.
+    [HttpPost("verify-pin")]
+    public async Task<ActionResult> VerifyPin(VerifyPinRequest request)
+    {
+        var pin = request.Pin?.Trim() ?? "";
+        var key = ThrottleKey(pin);
+        if (_throttle.IsLockedOut(key))
+            return StatusCode(StatusCodes.Status423Locked, new { error = "Too many failed attempts. Try again in a few minutes." });
+
+        var shopId = int.Parse(User.FindFirstValue("shopId") ?? "-1");
+        if (shopId <= 0) return Ok(new { valid = false }); // superadmins have no shop scope
+
+        var admins = await _db.Users
+            .Where(u => u.ShopId == shopId && u.Role == "admin" && u.PinHash != null)
+            .Select(u => u.PinHash!)
+            .ToListAsync();
+        var valid = admins.Any(hash => BCrypt.Net.BCrypt.Verify(pin, hash));
+
+        if (valid) _throttle.Reset(key); else _throttle.RecordFailure(key);
+        return Ok(new { valid });
+    }
+
+    // Staff list for PIN sign-in - display names + roles only, gated by a valid
     // shop code. No usernames, no emails; this is the "tap who you are" screen.
     [HttpPost("staff")]
     public async Task<ActionResult> Staff(StaffRequest request)

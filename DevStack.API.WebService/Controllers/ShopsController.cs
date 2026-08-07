@@ -23,6 +23,7 @@ public class ShopsController : ControllerBase
     public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName);
     public record UpdateShopRequest(string Name, string? LogoUrl, string? ReceiptQrUrl);
     public record SetShopStatusRequest(bool IsActive);
+    public record UpdateOwnerRequest(string? OwnerEmail, string? OwnerPhone);
 
     // GET api/shops — superadmin: list all shops with lightweight usage stats.
     // Orders carry a global query filter, so cross-shop counting must opt out
@@ -41,6 +42,8 @@ public class ShopsController : ControllerBase
                 s.Code,
                 s.IsActive,
                 s.CreatedAt,
+                s.OwnerEmail,
+                s.OwnerPhone,
                 UserCount = _db.Users.Count(u => u.ShopId == s.Id),
                 OrderCount = _db.Orders.IgnoreQueryFilters().Count(o => o.ShopId == s.Id),
                 LastOrderAt = _db.Orders.IgnoreQueryFilters()
@@ -108,7 +111,23 @@ public class ShopsController : ControllerBase
         return Ok(new { shop.Id, shop.Name, shop.Code, shop.IsActive });
     }
 
-    // POST api/shops/{id}/reset-admin-password — superadmin: set a fresh,
+    // PUT api/shops/{id}/owner - superadmin: owner contact details, used
+    // later for direct emails to shop owners. Email/phone stay optional.
+    [Authorize(Roles = "superadmin")]
+    [HttpPut("{id:int}/owner")]
+    public async Task<ActionResult> UpdateOwner(int id, UpdateOwnerRequest request)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+
+        shop.OwnerEmail = string.IsNullOrWhiteSpace(request.OwnerEmail) ? null : request.OwnerEmail.Trim();
+        shop.OwnerPhone = string.IsNullOrWhiteSpace(request.OwnerPhone) ? null : request.OwnerPhone.Trim();
+        await _db.SaveChangesAsync();
+
+        return Ok(new { shop.Id, shop.Name, shop.OwnerEmail, shop.OwnerPhone });
+    }
+
+    // POST api/shops/{id}/reset-admin-password - superadmin: set a fresh,
     // random password for the shop's first admin and return it ONCE. There is
     // no email system, so the caller (platform owner) relays it to the owner.
     // The returned password is intentionally not stored anywhere — only its

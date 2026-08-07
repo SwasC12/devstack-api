@@ -120,6 +120,10 @@ public class DevStackDataModel : DbContext
             .Property(m => m.PriceDelta)
             .HasPrecision(18, 2);
 
+        modelBuilder.Entity<Shift>()
+            .Property(s => s.StartingFloat)
+            .HasPrecision(18, 2);
+
         modelBuilder.Entity<OrderItemModifier>()
             .HasOne<OrderItem>()
             .WithMany(i => i.Modifiers)
