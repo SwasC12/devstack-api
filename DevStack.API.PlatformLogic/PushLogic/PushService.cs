@@ -26,6 +26,9 @@ public class PushService : IPushService
     private static bool _initTried;
     private static bool _ready;
 
+    // Platform health: is Firebase actually configured and initialised?
+    public static bool IsReady => _ready;
+
     public PushService(IConfiguration config, ILogger<PushService> logger)
     {
         _config = config;

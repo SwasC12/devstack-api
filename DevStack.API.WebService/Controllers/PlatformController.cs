@@ -1,4 +1,5 @@
 using DevStack.API.DataAccess;
+using DevStack.API.PlatformLogic.PushLogic;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,8 +15,13 @@ namespace DevStack.API.WebService.Controllers;
 public class PlatformController : ControllerBase
 {
     private readonly DevStackDataModel _db;
+    private readonly IConfiguration _config;
 
-    public PlatformController(DevStackDataModel db) => _db = db;
+    public PlatformController(DevStackDataModel db, IConfiguration config)
+    {
+        _db = db;
+        _config = config;
+    }
 
     // GET api/platform/overview - counters + the last 10 audit events.
     [HttpGet("overview")]
@@ -43,5 +49,38 @@ public class PlatformController : ControllerBase
             .ToListAsync();
 
         return Ok(new { stats, events });
+    }
+
+    // GET api/platform/health - REAL availability checks, not theater:
+    // API (this response), database (live ping), push (Firebase init state),
+    // storage (Cloudinary reachability). Storage is null when no cloud name
+    // is configured (local dev) - the UI shows it as n/a rather than red.
+    [HttpGet("health")]
+    public async Task<ActionResult> GetHealth()
+    {
+        bool? storage = null;
+        var cloud = _config.GetSection("Cloudinary")?["CloudName"];
+        if (!string.IsNullOrWhiteSpace(cloud))
+        {
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                using var resp = await client.SendAsync(
+                    new HttpRequestMessage(HttpMethod.Head, $"https://res.cloudinary.com/{cloud}/image/upload"));
+                storage = true; // any HTTP response means reachable
+            }
+            catch
+            {
+                storage = false;
+            }
+        }
+
+        return Ok(new
+        {
+            api = true,
+            database = await _db.Database.CanConnectAsync(),
+            push = PushService.IsReady,
+            storage
+        });
     }
 }
