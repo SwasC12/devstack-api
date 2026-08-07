@@ -48,7 +48,24 @@ public class PlatformController : ControllerBase
             .Select(e => new { e.Id, e.Type, e.ShopId, e.Detail, e.CreatedAtUtc })
             .ToListAsync();
 
-        return Ok(new { stats, events });
+        // App-update status: current release vs what shops checked in with.
+        var currentRelease = await _db.AppReleases
+            .Where(r => r.IsCurrent)
+            .OrderByDescending(r => r.CreatedAtUtc)
+            .FirstOrDefaultAsync();
+        var checkins = await _db.AppCheckins.ToListAsync();
+        var currentVersion = currentRelease?.Version;
+        var shopsUpdated = currentVersion is null ? 0 : checkins.Count(c => c.Version == currentVersion);
+
+        var update = new
+        {
+            currentVersion = currentVersion as string,
+            shopsCheckedIn = checkins.Count,
+            shopsUpdated,
+            shopsOnOldVersion = checkins.Count - shopsUpdated
+        };
+
+        return Ok(new { stats, events, update });
     }
 
     // GET api/platform/health - REAL availability checks, not theater:
