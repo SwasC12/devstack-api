@@ -92,6 +92,15 @@ public class ShopsController : ControllerBase
         _db.Users.Add(admin);
         await _db.SaveChangesAsync();
 
+        _db.PlatformEvents.Add(new PlatformEvent
+        {
+            Type = "shop_created",
+            ShopId = shop.Id,
+            Detail = $"{shop.Name} ({shop.Code}) — created with admin '{admin.Username}'",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+
         return CreatedAtAction(nameof(GetAll), new { id = shop.Id }, new { shop.Id, shop.Name, shop.Code, shop.IsActive, shop.CreatedAt });
     }
 
@@ -107,6 +116,15 @@ public class ShopsController : ControllerBase
         if (shop is null) return NotFound();
 
         shop.IsActive = request.IsActive;
+        await _db.SaveChangesAsync();
+
+        _db.PlatformEvents.Add(new PlatformEvent
+        {
+            Type = request.IsActive ? "shop_activated" : "shop_suspended",
+            ShopId = shop.Id,
+            Detail = $"{shop.Name} {(request.IsActive ? "activated" : "suspended")} by superadmin",
+            CreatedAtUtc = DateTime.UtcNow
+        });
         await _db.SaveChangesAsync();
         return Ok(new { shop.Id, shop.Name, shop.Code, shop.IsActive });
     }
@@ -149,6 +167,15 @@ public class ShopsController : ControllerBase
 
         var password = GeneratePassword();
         admin.PasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+        await _db.SaveChangesAsync();
+
+        _db.PlatformEvents.Add(new PlatformEvent
+        {
+            Type = "password_reset",
+            ShopId = shop.Id,
+            Detail = $"{shop.Name} — admin '{admin.Username}' password reset",
+            CreatedAtUtc = DateTime.UtcNow
+        });
         await _db.SaveChangesAsync();
 
         return Ok(new { password, username = admin.Username, displayName = admin.DisplayName });

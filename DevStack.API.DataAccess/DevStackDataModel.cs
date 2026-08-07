@@ -24,6 +24,7 @@ public class DevStackDataModel : DbContext
     public DbSet<MenuSize> MenuSizes => Set<MenuSize>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<PushToken> PushTokens => Set<PushToken>();
+    public DbSet<PlatformEvent> PlatformEvents => Set<PlatformEvent>();
     public DbSet<ModifierGroup> ModifierGroups => Set<ModifierGroup>();
     public DbSet<Modifier> Modifiers => Set<Modifier>();
     public DbSet<OrderItemModifier> OrderItemModifiers => Set<OrderItemModifier>();

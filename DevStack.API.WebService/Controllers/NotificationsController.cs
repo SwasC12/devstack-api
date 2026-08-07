@@ -68,15 +68,36 @@ public class NotificationsController : ControllerBase
         // are deleted; a failed send never fails the broadcast.
         var targetIds = targets.Select(t => t.Id).ToList();
         var tokens = await _db.PushTokens.Where(t => targetIds.Contains(t.UserId)).ToListAsync();
+        var failed = 0;
         foreach (var token in tokens)
         {
             var row = rows.FirstOrDefault(r => r.UserId == token.UserId);
             var ok = await _push.SendAsync(token, title, body, type, row?.Id);
-            if (ok == false) _db.PushTokens.Remove(token);
+            if (ok == false) { _db.PushTokens.Remove(token); failed++; }
         }
-        if (tokens.Count > 0) await _db.SaveChangesAsync();
 
-        return Ok(new { delivered = rows.Count, pushed = tokens.Count });
+        // Superadmin audit trail: the broadcast itself + any dead/undelivered
+        // pushes (these feed the platform overview counters and activity feed).
+        _db.PlatformEvents.Add(new PlatformEvent
+        {
+            Type = "broadcast_sent",
+            ShopId = request.ShopId,
+            Detail = $"\"{title}\" → {rows.Count} owner{(rows.Count == 1 ? "" : "s")}{(failed > 0 ? $", {failed} push{(failed == 1 ? "" : "es")} failed" : "")}",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        if (failed > 0)
+        {
+            _db.PlatformEvents.Add(new PlatformEvent
+            {
+                Type = "push_failed",
+                ShopId = request.ShopId,
+                Detail = $"{failed} push{(failed == 1 ? "" : "es")} failed for \"{title}\"",
+                CreatedAtUtc = DateTime.UtcNow
+            });
+        }
+        await _db.SaveChangesAsync();
+
+        return Ok(new { delivered = rows.Count, pushed = tokens.Count - failed });
     }
 
     // GET api/notifications — the signed-in user's inbox, unread first.
