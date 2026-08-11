@@ -11,6 +11,7 @@ public class Shop
     public string? ReceiptQrUrl { get; set; } // scannable QR printed on receipts (WhatsApp / review / feedback link)
     public string? OwnerEmail { get; set; } // platform contact info (superadmin-maintained; future owner emails)
     public string? OwnerPhone { get; set; } // platform contact info (superadmin-maintained)
+    public string? KitchenUrl { get; set; } // LAN webhook target for the kitchen display (e.g. http://192.168.1.50:8123)
     public bool IsActive { get; set; } = true; // suspended shops can't sign in (platform lifecycle)
     public DateTime CreatedAt { get; set; }
 }

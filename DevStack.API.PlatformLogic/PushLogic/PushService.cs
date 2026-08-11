@@ -16,6 +16,10 @@ public interface IPushService
     // Returns true when delivered, false when the token is dead (caller should
     // delete it), null when Firebase isn't configured / send skipped.
     Task<bool?> SendAsync(PushToken token, string title, string body, string type, int? notificationId = null);
+
+    // Data-only message (no visible notification): used for silent triggers
+    // like "new order on the kitchen display". Same return semantics.
+    Task<bool?> SendDataAsync(PushToken token, string type, string? payload = null);
 }
 
 public class PushService : IPushService
@@ -72,6 +76,39 @@ public class PushService : IPushService
         catch (Exception ex)
         {
             _logger.LogError(ex, "FCM send failed (non-FCM error)");
+            return true;
+        }
+    }
+
+    public async Task<bool?> SendDataAsync(PushToken token, string type, string? payload = null)
+    {
+        try
+        {
+            if (!EnsureInitialized()) return null;
+
+            var data = new Dictionary<string, string> { ["type"] = type };
+            if (!string.IsNullOrEmpty(payload)) data["payload"] = payload;
+
+            await FirebaseMessaging.DefaultInstance.SendAsync(new Message
+            {
+                Token = token.Token,
+                Data = data
+            });
+            return true;
+        }
+        catch (FirebaseMessagingException ex)
+        {
+            if (ex.MessagingErrorCode is MessagingErrorCode.Unregistered or MessagingErrorCode.InvalidArgument or MessagingErrorCode.SenderIdMismatch)
+            {
+                _logger.LogWarning("FCM: dropping dead token {token}", token.Token[..Math.Min(12, token.Token.Length)]);
+                return false;
+            }
+            _logger.LogError(ex, "FCM data send failed");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "FCM data send failed (non-FCM error)");
             return true;
         }
     }

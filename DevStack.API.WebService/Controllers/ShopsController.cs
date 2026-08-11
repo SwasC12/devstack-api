@@ -21,7 +21,7 @@ public class ShopsController : ControllerBase
     public ShopsController(DevStackDataModel db) => _db = db;
 
     public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName);
-    public record UpdateShopRequest(string Name, string? LogoUrl, string? ReceiptQrUrl);
+    public record UpdateShopRequest(string Name, string? LogoUrl, string? ReceiptQrUrl, string? KitchenUrl = null);
     public record SetShopStatusRequest(bool IsActive);
     public record UpdateOwnerRequest(string? OwnerEmail, string? OwnerPhone);
 
@@ -203,10 +203,10 @@ public class ShopsController : ControllerBase
         var shop = await _db.Shops.FindAsync(shopId);
         if (shop is null) return NotFound();
 
-        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl });
+        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl, shop.KitchenUrl });
     }
 
-    // PUT api/shops/me — shop admin (owner): update the current shop's branding.
+    // PUT api/shops/me - shop admin (owner): update the current shop's branding.
     [Authorize(Roles = "admin")]
     [HttpPut("me")]
     public async Task<ActionResult> UpdateMe(UpdateShopRequest request)
@@ -224,8 +224,9 @@ public class ShopsController : ControllerBase
         shop.Name = name;
         shop.LogoUrl = request.LogoUrl?.Trim();
         shop.ReceiptQrUrl = string.IsNullOrWhiteSpace(request.ReceiptQrUrl) ? null : request.ReceiptQrUrl.Trim();
+        shop.KitchenUrl = string.IsNullOrWhiteSpace(request.KitchenUrl) ? null : request.KitchenUrl.Trim();
         await _db.SaveChangesAsync();
 
-        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl });
+        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl, shop.KitchenUrl });
     }
 }
