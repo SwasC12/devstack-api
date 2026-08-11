@@ -23,6 +23,7 @@ public class OrdersController : ControllerBase
     public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null);
     public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null, string? Note = null, List<int>? ModifierIds = null);
     public record VoidOrderRequest(string Reason);
+    public record RefundOrderRequest(decimal Amount, string Reason);
 
     // POST /api/orders — place an order. Authorized so the order is tied to the
     // authenticated user's shop (POS is always signed in).
@@ -248,6 +249,7 @@ public class OrdersController : ControllerBase
     {
         var orders = await _db.Orders
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
+            .Include(o => o.Refunds)
             .OrderByDescending(o => o.CreatedAt).ToListAsync();
 
         var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct().ToList();
@@ -274,6 +276,8 @@ public class OrdersController : ControllerBase
             o.VoidedAt,
             o.VoidedByUserId,
             o.VoidReason,
+            RefundedAmount = o.Refunds.Sum(r => r.Amount),
+            Refunds = o.Refunds.Select(r => new { r.Id, r.Amount, r.Reason, r.PaymentMethod, r.CreatedAt }),
             Items = o.Items.Select(i => new
             {
                 i.Id, i.MenuItemId, i.Name, i.Price, i.Quantity, i.SizeId, i.SizeName, i.Note,
@@ -315,13 +319,53 @@ public class OrdersController : ControllerBase
         return Ok();
     }
 
-    // GET /api/orders/5 — any logged-in user (tenant-scoped by the global filter).
+    // POST /api/orders/{id}/refund - admin only (manager PIN verified on the
+    // client). Proper-POS semantics: a refund returns MONEY, not stock - the
+    // items were already sold/consumed (void is the stock-return path for
+    // unfulfilled orders). Cannot exceed what is still refundable on the
+    // order (total minus previous refunds); voided orders can't be refunded.
+    [Authorize(Roles = "admin")]
+    [HttpPost("{id:int}/refund")]
+    public async Task<IActionResult> RefundOrder(int id, RefundOrderRequest request)
+    {
+        var order = await _db.Orders.Include(o => o.Refunds).FirstOrDefaultAsync(o => o.Id == id);
+        if (order is null) return NotFound();
+        if (order.VoidedAt is not null)
+            return BadRequest(new { error = "This order is voided and excluded from revenue - no refund needed." });
+
+        var reason = request.Reason?.Trim();
+        if (string.IsNullOrEmpty(reason))
+            return BadRequest(new { error = "A reason is required for a refund." });
+        if (request.Amount <= 0)
+            return BadRequest(new { error = "Refund amount must be greater than zero." });
+
+        var alreadyRefunded = order.Refunds.Sum(r => r.Amount);
+        var refundable = order.Total - alreadyRefunded;
+        if (request.Amount > refundable + 0.001m)
+            return BadRequest(new { error = $"Cannot refund more than the remaining R{refundable:0.00}." });
+
+        _db.OrderRefunds.Add(new OrderRefund
+        {
+            OrderId = order.Id,
+            ShopId = order.ShopId,
+            Amount = Math.Round(request.Amount, 2),
+            Reason = reason,
+            PaymentMethod = "cash",
+            CreatedAt = DateTime.UtcNow.AddHours(2),
+            UserId = int.Parse(User.FindFirstValue("userId")!)
+        });
+        await _db.SaveChangesAsync();
+        return Ok();
+    }
+
+    // GET /api/orders/5 - any logged-in user (tenant-scoped by the global filter).
     [Authorize]
     [HttpGet("{id:int}")]
     public async Task<ActionResult<Order>> GetOrder(int id)
     {
         var order = await _db.Orders
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
+            .Include(o => o.Refunds)
             .FirstOrDefaultAsync(o => o.Id == id);
         return order is null ? NotFound() : Ok(order);
     }
@@ -345,12 +389,15 @@ public class OrdersController : ControllerBase
         var orders = await _db.Orders
             .Where(o => o.VoidedAt == null && o.CreatedAt >= from)
             .Include(o => o.Items)
+            .Include(o => o.Refunds)
             .ToListAsync();
+
+        decimal NetRevenue(Order o) => o.Total - o.Refunds.Sum(r => r.Amount);
 
         var daily = orders
             .GroupBy(o => o.CreatedAt.Date)
             .OrderBy(g => g.Key)
-            .Select(g => new { date = g.Key.ToString("yyyy-MM-dd"), revenue = g.Sum(o => o.Total), orders = g.Count() })
+            .Select(g => new { date = g.Key.ToString("yyyy-MM-dd"), revenue = g.Sum(NetRevenue), orders = g.Count() })
             .ToList();
 
         // Per-cashier: display names joined from Users.
@@ -363,7 +410,7 @@ public class OrdersController : ControllerBase
             {
                 name = users.TryGetValue(g.Key, out var n) ? n : "Unknown",
                 orders = g.Count(),
-                revenue = g.Sum(o => o.Total)
+                revenue = g.Sum(NetRevenue)
             })
             .OrderByDescending(c => c.revenue)
             .ToList();
@@ -388,7 +435,7 @@ public class OrdersController : ControllerBase
             days,
             totals = new
             {
-                revenue = orders.Sum(o => o.Total),
+                revenue = orders.Sum(NetRevenue),
                 orders = orders.Count,
                 items = orders.Sum(o => o.Items.Sum(i => i.Quantity))
             },
@@ -405,11 +452,13 @@ public class OrdersController : ControllerBase
     public async Task<ActionResult> GetSummary()
     {
         var today = DateTime.UtcNow.AddHours(2).Date;
-        var orders = await _db.Orders.Include(o => o.Items).ToListAsync();
+        var orders = await _db.Orders.Include(o => o.Items).Include(o => o.Refunds).ToListAsync();
         var live = orders.Where(o => o.VoidedAt is null).ToList();
 
-        var revenue = live.Sum(o => o.Total);
-        var todayRevenue = live.Where(o => o.CreatedAt >= today).Sum(o => o.Total);
+        decimal NetRevenue(Order o) => o.Total - o.Refunds.Sum(r => r.Amount);
+
+        var revenue = live.Sum(NetRevenue);
+        var todayRevenue = live.Where(o => o.CreatedAt >= today).Sum(NetRevenue);
 
         var topItems = live
             .SelectMany(o => o.Items)

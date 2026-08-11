@@ -30,6 +30,7 @@ public class DevStackDataModel : DbContext
     public DbSet<ModifierGroup> ModifierGroups => Set<ModifierGroup>();
     public DbSet<Modifier> Modifiers => Set<Modifier>();
     public DbSet<OrderItemModifier> OrderItemModifiers => Set<OrderItemModifier>();
+    public DbSet<OrderRefund> OrderRefunds => Set<OrderRefund>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

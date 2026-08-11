@@ -31,4 +31,7 @@ public class Order
     public DateTime? VoidedAt { get; set; }
     public int? VoidedByUserId { get; set; }
     public string? VoidReason { get; set; }
+
+    // Refunds against this order (money back, stock NOT returned).
+    public List<OrderRefund> Refunds { get; set; } = [];
 }
