@@ -184,6 +184,18 @@ using (var scope = app.Services.CreateScope())
 }
 
 // ── HTTP PIPELINE ─────────────────────────────────────────────────────────────
+// Security headers: no clickjacking, no MIME sniffing, tight-ish CSP.
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Content-Security-Policy"] =
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none'";
+    await next();
+});
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
