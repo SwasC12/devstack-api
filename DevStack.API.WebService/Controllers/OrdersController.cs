@@ -376,7 +376,52 @@ public class OrdersController : ControllerBase
         return string.IsNullOrEmpty(v) ? null : (v.Length > max ? v[..max] : v);
     }
 
-    // GET /api/orders/analytics?days=14 — admin only. Owner analytics: daily
+    // GET /api/orders/kitchen - any logged-in user. Live queue for the kitchen
+    // display tablet: not voided, not yet completed, from the last `minutes`.
+    // Items + modifiers + notes only (no prices) - it's the make list.
+    [Authorize]
+    [HttpGet("kitchen")]
+    public async Task<ActionResult> GetKitchenOrders([FromQuery] int minutes = 120)
+    {
+        minutes = Math.Clamp(minutes, 15, 480);
+        var cutoff = DateTime.UtcNow.AddHours(2).AddMinutes(-minutes);
+        var orders = await _db.Orders
+            .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.CreatedAt >= cutoff)
+            .Include(o => o.Items).ThenInclude(i => i.Modifiers)
+            .OrderBy(o => o.CreatedAt)
+            .ToListAsync();
+        return Ok(orders.Select(o => new
+        {
+            o.Id,
+            o.CreatedAt,
+            o.CustomerName,
+            o.Notes,
+            Items = o.Items.Select(i => new
+            {
+                i.Name, i.Quantity, i.SizeName, i.Note,
+                Modifiers = i.Modifiers.Select(m => m.Name)
+            })
+        }));
+    }
+
+    // POST /api/orders/{id}/complete - any logged-in user. Kitchen taps
+    // "Done": the order leaves the live queue but stays in revenue.
+    [Authorize]
+    [HttpPost("{id:int}/complete")]
+    public async Task<IActionResult> CompleteOrder(int id)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id);
+        if (order is null) return NotFound();
+        if (order.VoidedAt is not null)
+            return BadRequest(new { error = "This order is voided." });
+        if (order.CompletedAt is not null)
+            return BadRequest(new { error = "This order is already completed." });
+        order.CompletedAt = DateTime.UtcNow.AddHours(2);
+        await _db.SaveChangesAsync();
+        return Ok();
+    }
+
+    // GET /api/orders/analytics?days=14 - admin only. Owner analytics: daily
     // revenue series, per-cashier totals and per-category sales. Voided orders
     // excluded; everything scoped to the current shop by the global filter.
     [Authorize(Roles = "admin")]

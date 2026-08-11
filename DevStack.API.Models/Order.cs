@@ -34,4 +34,8 @@ public class Order
 
     // Refunds against this order (money back, stock NOT returned).
     public List<OrderRefund> Refunds { get; set; } = [];
+
+    // Kitchen display: when the kitchen taps "Done" the order leaves the live
+    // queue (it stays in revenue - completed just means made/served).
+    public DateTime? CompletedAt { get; set; }
 }
