@@ -396,7 +396,10 @@ public class AuthController : ControllerBase
     private string IssueRefreshToken(AppUser user)
     {
         var raw = GenerateRefreshToken();
-        var lifetime = user.Role == "cashier" ? TimeSpan.FromHours(12) : TimeSpan.FromDays(30);
+        // Cashier sessions last a week (not 12h) so the till survives overnight
+        // and weekend closures without a re-login; rotation keeps sliding it
+        // forward on every use, and replay-burn still kills a stolen token.
+        var lifetime = user.Role == "cashier" ? TimeSpan.FromDays(7) : TimeSpan.FromDays(30);
 
         _db.RefreshTokens.Add(new RefreshToken
         {
@@ -416,7 +419,8 @@ public class AuthController : ControllerBase
     private (RefreshToken Token, string Raw) CreateRefreshToken(AppUser user)
     {
         var raw = GenerateRefreshToken();
-        var lifetime = user.Role == "cashier" ? TimeSpan.FromHours(12) : TimeSpan.FromDays(30);
+        // Same cashier lifetime as IssueRefreshToken: 7 days, sliding on rotate.
+        var lifetime = user.Role == "cashier" ? TimeSpan.FromDays(7) : TimeSpan.FromDays(30);
         var token = new RefreshToken
         {
             UserId = user.Id,
