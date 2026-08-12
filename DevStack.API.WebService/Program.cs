@@ -89,7 +89,8 @@ var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get
     ?? new[] { "http://localhost:4200" };
 builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
-        policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+        policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()
+            .WithExposedHeaders("ETag"))); // kitchen poll reads the ETag for conditional GETs
 
 var app = builder.Build();
 

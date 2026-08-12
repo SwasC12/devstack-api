@@ -2,6 +2,7 @@ using System.Security.Claims;
 using DevStack.API.DataAccess;
 using DevStack.API.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -390,6 +391,16 @@ public class OrdersController : ControllerBase
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
             .OrderBy(o => o.CreatedAt)
             .ToListAsync();
+
+        // Conditional GET: the kitchen tablet polls this only as a safety net,
+        // so a stable ETag lets it get a cheap 304 when the queue hasn't changed
+        // (no payload, no re-render on the tablet). Tag rotates on any change to
+        // the queue: count, newest order, id-xor, total item lines.
+        var tag = $"\"{_currentShop.ShopId}:{orders.Count}:{(orders.Count == 0 ? 0 : orders.Max(o => o.CreatedAt.Ticks))}:{orders.Aggregate(0L, (a, o) => a ^ o.Id)}:{orders.Sum(o => o.Items.Count)}\"";
+        if (Request.Headers.IfNoneMatch.ToString() == tag)
+            return StatusCode(StatusCodes.Status304NotModified);
+
+        Response.Headers.ETag = tag;
         return Ok(orders.Select(o => new
         {
             o.Id,
