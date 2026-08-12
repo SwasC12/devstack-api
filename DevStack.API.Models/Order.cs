@@ -38,4 +38,9 @@ public class Order
     // Kitchen display: when the kitchen taps "Done" the order leaves the live
     // queue (it stays in revenue - completed just means made/served).
     public DateTime? CompletedAt { get; set; }
+
+    // Service mode: dine-in (with table number) vs takeaway. Drives the kitchen
+    // display card and the receipt.
+    public string? DineMode { get; set; } // dinein | takeaway
+    public string? TableNumber { get; set; }
 }

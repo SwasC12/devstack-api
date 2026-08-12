@@ -21,7 +21,7 @@ public class OrdersController : ControllerBase
         _currentShop = currentShop;
     }
 
-    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null);
+    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null, string? DineMode = null, string? TableNumber = null);
     public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null, string? Note = null, List<int>? ModifierIds = null);
     public record VoidOrderRequest(string Reason);
     public record RefundOrderRequest(decimal Amount, string Reason);
@@ -60,7 +60,9 @@ public class OrdersController : ControllerBase
             Items = [],
             CustomerName = Trimmed(request.CustomerName, 100),
             CustomerPhone = Trimmed(request.CustomerPhone, 50),
-            Notes = Trimmed(request.Notes, 1000)
+            Notes = Trimmed(request.Notes, 1000),
+            DineMode = request.DineMode?.Trim().ToLowerInvariant() == "dinein" ? "dinein" : "takeaway",
+            TableNumber = Trimmed(request.TableNumber, 20)
         };
 
         await using var tx = await _db.Database.BeginTransactionAsync();
@@ -413,12 +415,79 @@ public class OrdersController : ControllerBase
             o.CreatedAt,
             o.CustomerName,
             o.Notes,
+            o.DineMode,
+            o.TableNumber,
             Items = o.Items.Select(i => new
             {
                 i.Name, i.Quantity, i.SizeName, i.Note,
                 Modifiers = i.Modifiers.Select(m => m.Name)
             })
         }));
+    }
+
+    // GET /api/orders/cashup?date=yyyy-MM-dd - admin only. End-of-day cash-up:
+    // totals per payment method, discounts, refunds and per-cashier breakdown
+    // for a day (defaults to today, SAST). Voided orders excluded everywhere.
+    [Authorize(Roles = "admin")]
+    [HttpGet("cashup")]
+    public async Task<ActionResult> GetCashup([FromQuery] string? date = null)
+    {
+        var dayStart = DateTime.UtcNow.AddHours(2).Date;
+        if (!string.IsNullOrWhiteSpace(date) && DateTime.TryParse(date, out var parsed))
+            dayStart = parsed.Date;
+        var dayEnd = dayStart.AddDays(1);
+
+        var orders = await _db.Orders
+            .Where(o => o.VoidedAt == null && o.CreatedAt >= dayStart && o.CreatedAt < dayEnd)
+            .Include(o => o.Refunds)
+            .ToListAsync();
+
+        decimal NetRevenue(Order o) => o.Total - o.Refunds.Sum(r => r.Amount);
+        decimal RefundsOf(Order o) => o.Refunds.Sum(r => r.Amount);
+
+        var byMethod = orders
+            .GroupBy(o => o.PaymentMethod)
+            .Select(g => new
+            {
+                method = g.Key,
+                gross = g.Sum(o => o.Total),
+                refunds = g.Sum(RefundsOf),
+                net = g.Sum(NetRevenue),
+                orders = g.Count()
+            })
+            .OrderBy(g => g.method)
+            .ToList();
+
+        var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct().ToList();
+        var users = await _db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.DisplayName);
+        var cashiers = orders
+            .Where(o => o.UserId is not null)
+            .GroupBy(o => o.UserId!.Value)
+            .Select(g => new
+            {
+                name = users.TryGetValue(g.Key, out var n) ? n : "Unknown",
+                orders = g.Count(),
+                sales = g.Sum(o => o.Total),
+                refunds = g.Sum(RefundsOf),
+                net = g.Sum(NetRevenue)
+            })
+            .OrderByDescending(c => c.net)
+            .ToList();
+
+        return Ok(new
+        {
+            date = dayStart.ToString("yyyy-MM-dd"),
+            totals = new
+            {
+                orders = orders.Count,
+                gross = orders.Sum(o => o.Total),
+                discounts = orders.Sum(o => o.DiscountAmount),
+                refunds = orders.Sum(RefundsOf),
+                net = orders.Sum(NetRevenue)
+            },
+            byMethod,
+            cashiers
+        });
     }
 
     // POST /api/orders/{id}/complete - any logged-in user. Kitchen taps
