@@ -386,19 +386,25 @@ public class OrdersController : ControllerBase
     {
         minutes = Math.Clamp(minutes, 15, 480);
         var cutoff = DateTime.UtcNow.AddHours(2).AddMinutes(-minutes);
+
+        // Lightweight projection first: the safety-net poll arrives every 5 min
+        // and usually nothing changed - answer 304 without loading the full
+        // order graph (no item/modifier joins, no JSON). Tag rotates on any
+        // change to the queue: count, newest order, id-xor, total item lines.
+        var queue = await _db.Orders
+            .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.CreatedAt >= cutoff)
+            .Select(o => new { o.Id, o.CreatedAt, ItemCount = o.Items.Count })
+            .ToListAsync();
+        var tag = $"\"{_currentShop.ShopId}:{queue.Count}:{(queue.Count == 0 ? 0 : queue.Max(o => o.CreatedAt.Ticks))}:{queue.Aggregate(0L, (a, o) => a ^ o.Id)}:{queue.Sum(o => o.ItemCount)}\"";
+        if (Request.Headers.IfNoneMatch.ToString() == tag)
+            return StatusCode(StatusCodes.Status304NotModified);
+
+        // Queue actually changed (or first call) - load the full make-list.
         var orders = await _db.Orders
             .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.CreatedAt >= cutoff)
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
             .OrderBy(o => o.CreatedAt)
             .ToListAsync();
-
-        // Conditional GET: the kitchen tablet polls this only as a safety net,
-        // so a stable ETag lets it get a cheap 304 when the queue hasn't changed
-        // (no payload, no re-render on the tablet). Tag rotates on any change to
-        // the queue: count, newest order, id-xor, total item lines.
-        var tag = $"\"{_currentShop.ShopId}:{orders.Count}:{(orders.Count == 0 ? 0 : orders.Max(o => o.CreatedAt.Ticks))}:{orders.Aggregate(0L, (a, o) => a ^ o.Id)}:{orders.Sum(o => o.Items.Count)}\"";
-        if (Request.Headers.IfNoneMatch.ToString() == tag)
-            return StatusCode(StatusCodes.Status304NotModified);
 
         Response.Headers.ETag = tag;
         return Ok(orders.Select(o => new
