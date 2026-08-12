@@ -239,22 +239,32 @@ public class AuthController : ControllerBase
     [HttpPost("refresh")]
     public async Task<ActionResult<LoginResponse>> Refresh(RefreshRequest request)
     {
-        // Cookie first (web UI); native app falls back to the token it stored
-        // in device storage, because WebView cookies don't reliably survive an
-        // app kill on all Android devices.
-        var raw = Request.Cookies[RefreshCookieName];
-        if (string.IsNullOrEmpty(raw)) raw = request.RefreshToken;
+        // Native app sends its stored token in the body; web UI relies on the
+        // HttpOnly cookie. Prefer the body token so a stale cookie on the
+        // device can never shadow (or burn) a valid stored token.
+        var raw = request.RefreshToken;
+        if (string.IsNullOrEmpty(raw)) raw = Request.Cookies[RefreshCookieName];
         if (string.IsNullOrEmpty(raw)) return Unauthorized();
 
         var stored = await _db.RefreshTokens.FirstOrDefaultAsync(t => t.TokenHash == HashToken(raw));
         if (stored is null) return Unauthorized();
 
-        // A revoked token being presented means it leaked. Burn the user's whole
-        // chain so the theft doesn't keep paying off.
+        // A revoked token being presented means it leaked. Revoke just this
+        // token's lineage (its rotated replacements) so the theft doesn't keep
+        // paying off - NOT the user's whole chain, which would log out every
+        // tablet sharing this account on one device's mishap.
         if (stored.RevokedAtUtc is not null)
         {
-            var active = await _db.RefreshTokens.Where(t => t.UserId == stored.UserId && t.RevokedAtUtc == null).ToListAsync();
-            foreach (var t in active) t.RevokedAtUtc = DateTime.UtcNow;
+            var lineage = new List<RefreshToken>();
+            var current = stored;
+            while (current is not null)
+            {
+                lineage.Add(current);
+                current = current.ReplacedByTokenId is int nextId
+                    ? await _db.RefreshTokens.FirstOrDefaultAsync(t => t.Id == nextId)
+                    : null;
+            }
+            foreach (var t in lineage) t.RevokedAtUtc ??= DateTime.UtcNow;
             await _db.SaveChangesAsync();
             Response.Cookies.Delete(RefreshCookieName);
             return Unauthorized();
