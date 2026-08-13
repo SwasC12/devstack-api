@@ -111,4 +111,63 @@ public class ShiftsController : ControllerBase
             startingFloat = shift.StartingFloat
         });
     }
+
+    // GET /api/shifts/timesheet?from=yyyy-MM-dd&to=yyyy-MM-dd - admin: hours
+    // worked per employee for a date range (feeds payroll). Every shop user is
+    // listed (zero-hour employees included so nobody is missed); open shifts
+    // count up to "now" and are flagged active. Times are SAST.
+    [Authorize(Roles = "admin")]
+    [HttpGet("timesheet")]
+    public async Task<ActionResult> GetTimesheet(string? from, string? to)
+    {
+        var now = DateTime.UtcNow.AddHours(2);
+        var fromDate = DateTime.TryParseExact(from, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var f)
+            ? f.Date : now.Date;
+        var toDate = DateTime.TryParseExact(to, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var t)
+            ? t.Date : now.Date;
+        if (toDate < fromDate) toDate = fromDate;
+        var rangeEnd = toDate.AddDays(1); // exclusive upper bound
+
+        var users = await _db.Users
+            .Where(u => u.ShopId == _currentShop.ShopId)
+            .Select(u => new { u.Id, u.DisplayName, u.Role, u.WageRate })
+            .ToListAsync();
+
+        var shifts = await _db.Shifts
+            .Where(s => s.StartTime >= fromDate && s.StartTime < rangeEnd)
+            .OrderBy(s => s.StartTime)
+            .ToListAsync();
+
+        var employees = users.Select(u =>
+        {
+            var theirs = shifts.Where(s => s.UserId == u.Id).ToList();
+            var rows = theirs.Select(s =>
+            {
+                var end = s.EndTime ?? now;
+                var hours = Math.Round((decimal)(end - s.StartTime).TotalHours, 2);
+                return new
+                {
+                    s.Id,
+                    s.StartTime,
+                    EndTime = s.EndTime,
+                    hours,
+                    Active = s.EndTime is null
+                };
+            }).ToList();
+            var totalHours = Math.Round(rows.Sum(r => r.hours), 2);
+            return new
+            {
+                u.Id,
+                u.DisplayName,
+                u.Role,
+                u.WageRate,
+                shiftCount = theirs.Count,
+                totalHours,
+                wageCost = u.WageRate is decimal rate ? Math.Round(totalHours * rate, 2) : 0m,
+                shifts = rows
+            };
+        }).OrderByDescending(e => e.totalHours).ToList();
+
+        return Ok(new { from = fromDate, to = toDate, employees });
+    }
 }

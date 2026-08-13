@@ -9,4 +9,7 @@ public class AppUser
     public string DisplayName { get; set; } = string.Empty;
     public string Role { get; set; } = "admin"; // superadmin | admin | cashier
     public int? ShopId { get; set; } // null for superadmins; shop staff belong to one shop
+
+    // Hourly wage in ZAR - feeds the timesheet payroll report (null = not set).
+    public decimal? WageRate { get; set; }
 }

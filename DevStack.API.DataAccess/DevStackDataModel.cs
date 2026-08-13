@@ -128,6 +128,10 @@ public class DevStackDataModel : DbContext
             .Property(s => s.StartingFloat)
             .HasPrecision(18, 2);
 
+        modelBuilder.Entity<AppUser>()
+            .Property(u => u.WageRate)
+            .HasPrecision(18, 2);
+
         modelBuilder.Entity<OrderItemModifier>()
             .HasOne<OrderItem>()
             .WithMany(i => i.Modifiers)
