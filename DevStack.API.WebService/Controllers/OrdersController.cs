@@ -279,10 +279,11 @@ public class OrdersController : ControllerBase
         if (cashPaid > 0)
         {
             order.AmountReceived = cashPaid;
-            // Change = what the cash covered beyond the non-cash portion:
-            // cashPaid - (grandTotal - nonCashPaid). Exact cash => 0.
+            // ALWAYS record change (including R0.00): the receipt must print
+            // the change line for legal / till-reconciliation purposes, even
+            // when the customer paid exact.
             var change = cashPaid - (grandTotal - nonCashPaid);
-            if (change > 0.005m) order.ChangeGiven = Math.Round(change, 2);
+            order.ChangeGiven = Math.Round(change, 2);
         }
 
         var now = DateTime.UtcNow.AddHours(2);
