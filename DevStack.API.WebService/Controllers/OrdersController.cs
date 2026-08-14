@@ -259,21 +259,29 @@ public class OrdersController : ControllerBase
             order.PaymentMethod = "account";
         }
 
-        // The tenders must cover the grand total exactly (server-side, never
-        // trusted from the client). Cash change is computed against the cash
-        // portion only.
-        if (Math.Abs(tenderTotal - grandTotal) > 0.01m)
-        {
-            await tx.RollbackAsync();
-            return BadRequest(new { error = $"Payments total R{tenderTotal:0.00} doesn't match the R{grandTotal:0.00} due." });
-        }
-
         var cashPaid = tenders.Where(t => t.Method == "cash").Sum(t => t.Amount);
         var nonCashPaid = tenderTotal - cashPaid;
-        if (cashPaid > nonCashPaid)
+
+        // Tenders must COVER the grand total; the only allowed excess is cash
+        // (the cashier gives change back). Cards/accounts charge exactly.
+        if (tenderTotal + 0.005m < grandTotal)
+        {
+            await tx.RollbackAsync();
+            return BadRequest(new { error = $"Payments total R{tenderTotal:0.00} doesn't cover the R{grandTotal:0.00} due." });
+        }
+        var excess = tenderTotal - grandTotal;
+        if (excess > cashPaid + 0.005m)
+        {
+            await tx.RollbackAsync();
+            return BadRequest(new { error = $"Non-cash payments exceed the R{grandTotal:0.00} due." });
+        }
+
+        if (cashPaid > 0)
         {
             order.AmountReceived = cashPaid;
-            var change = cashPaid - nonCashPaid;
+            // Change = what the cash covered beyond the non-cash portion:
+            // cashPaid - (grandTotal - nonCashPaid). Exact cash => 0.
+            var change = cashPaid - (grandTotal - nonCashPaid);
             if (change > 0.005m) order.ChangeGiven = Math.Round(change, 2);
         }
 
