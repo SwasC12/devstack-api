@@ -62,6 +62,7 @@ public class CategoryLogic : ICategoryLogic
 
             // Categories always belong to the current shop; the client can't change it.
             category.ShopId = _currentShop.ShopId;
+            category.Station = category.Station is "kitchen" or "bar" ? category.Station : "both";
 
             // Category names must be unique (the dropdown and the rename cascade
             // both assume a name maps to one category). Ignore self when editing.

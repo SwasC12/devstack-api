@@ -1,7 +1,9 @@
+using DevStack.API.DataAccess;
 using DevStack.API.Models;
 using DevStack.API.PlatformLogic.CategoryLogic;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace DevStack.API.WebService.Controllers;
 
@@ -18,10 +20,14 @@ namespace DevStack.API.WebService.Controllers;
 public class CategoriesController : ControllerBase
 {
     private readonly ICategoryLogic _logic;
+    private readonly DevStackDataModel _db;
+    private readonly ICurrentShop _currentShop;
 
-    public CategoriesController(ICategoryLogic logic)
+    public CategoriesController(ICategoryLogic logic, DevStackDataModel db, ICurrentShop currentShop)
     {
         _logic = logic;
+        _db = db;
+        _currentShop = currentShop;
     }
 
     // GET api/categories
@@ -50,6 +56,11 @@ public class CategoriesController : ControllerBase
         if (!result.IsSuccess) return BadRequest(new { error = result.Error });
 
         var isBrandNew = category.Id == 0;
+        var userId = int.Parse(User.FindFirstValue("userId") ?? "0");
+        await AuditLog.Write(_db, _currentShop.ShopId, userId,
+            isBrandNew ? "category_create" : "category_update",
+            $"'{result.Data!.Name}' (station: {result.Data.Station})");
+        await _db.SaveChangesAsync();
         return isBrandNew
             ? CreatedAtAction(nameof(Get), new { id = result.Data!.Id }, result.Data)
             : Ok(result.Data);
@@ -60,6 +71,10 @@ public class CategoriesController : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         var result = await _logic.DeleteCategoryAsync(id);
-        return result.IsSuccess ? NoContent() : BadRequest(new { error = result.Error });
+        if (!result.IsSuccess) return BadRequest(new { error = result.Error });
+        var userId = int.Parse(User.FindFirstValue("userId") ?? "0");
+        await AuditLog.Write(_db, _currentShop.ShopId, userId, "category_delete", $"category #{id}");
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 }

@@ -43,4 +43,19 @@ public class Order
     // display card and the receipt.
     public string? DineMode { get; set; } // dinein | takeaway
     public string? TableNumber { get; set; }
+
+    // KDS hold & send: when set, the order sits in the kitchen's held strip
+    // instead of the live queue until "Send" clears it.
+    public DateTime? HeldAt { get; set; }
+
+    // Money extras: tip added by the customer + service charge (auto or manual).
+    public decimal TipAmount { get; set; }
+    public decimal ServiceChargeAmount { get; set; }
+
+    // House account: when set, the order was charged to this customer's tab
+    // (balance increased; settle separately). Payments rows carry the detail.
+    public int? AccountCustomerId { get; set; }
+
+    // Split payments: one row per tender (cash/card/account). Reports use these.
+    public List<OrderPayment> Payments { get; set; } = [];
 }

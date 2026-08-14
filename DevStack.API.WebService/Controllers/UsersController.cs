@@ -57,6 +57,7 @@ public class UsersController : ControllerBase
         };
 
         _db.Users.Add(user);
+        await AuditLog.Write(_db, _currentShop.ShopId, user.Id, "user_create", $"'{user.Username}' ({user.Role})");
         await _db.SaveChangesAsync();
         return CreatedAtAction(nameof(GetAll), new { id = user.Id }, new { user.Id, user.Username, user.DisplayName, user.Role, user.WageRate });
     }
@@ -75,6 +76,7 @@ public class UsersController : ControllerBase
         user.DisplayName = name;
         user.Role = request.Role is "cashier" or "admin" ? request.Role : user.Role;
         user.WageRate = request.WageRate is > 0 ? request.WageRate : null;
+        await AuditLog.Write(_db, _currentShop.ShopId, id, "user_update", $"'{user.Username}' → '{user.DisplayName}' ({user.Role})");
         await _db.SaveChangesAsync();
 
         return Ok(new { user.Id, user.Username, user.DisplayName, user.Role, user.WageRate });
@@ -90,6 +92,7 @@ public class UsersController : ControllerBase
         if (!IsValidPin(request.Pin)) return BadRequest(new { error = "PIN must be 4-6 digits." });
 
         user.PinHash = BCrypt.Net.BCrypt.HashPassword(request.Pin);
+        await AuditLog.Write(_db, _currentShop.ShopId, id, "user_pin", $"PIN set for '{user.Username}'");
         await _db.SaveChangesAsync();
         return Ok();
     }
@@ -104,6 +107,7 @@ public class UsersController : ControllerBase
         if (user is null || user.ShopId != _currentShop.ShopId) return NotFound();
 
         _db.Users.Remove(user);
+        await AuditLog.Write(_db, _currentShop.ShopId, id, "user_delete", $"'{user.Username}' ({user.Role})");
         await _db.SaveChangesAsync();
         return NoContent();
     }

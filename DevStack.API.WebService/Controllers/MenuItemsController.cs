@@ -1,7 +1,9 @@
+using DevStack.API.DataAccess;
 using DevStack.API.Models;
 using DevStack.API.PlatformLogic.MenuItemLogic;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace DevStack.API.WebService.Controllers;
 
@@ -25,10 +27,14 @@ public class MenuItemsController : ControllerBase
     // The controller depends only on the LOGIC layer's interface. It knows
     // nothing about the data layer — that's the point of the layering.
     private readonly IMenuItemLogic _logic;
+    private readonly DevStackDataModel _db;
+    private readonly ICurrentShop _currentShop;
 
-    public MenuItemsController(IMenuItemLogic logic)
+    public MenuItemsController(IMenuItemLogic logic, DevStackDataModel db, ICurrentShop currentShop)
     {
         _logic = logic;
+        _db = db;
+        _currentShop = currentShop;
     }
 
     // GET api/menuitems
@@ -57,9 +63,12 @@ public class MenuItemsController : ControllerBase
         var result = await _logic.WriteItemAsync(item);
         if (!result.IsSuccess) return BadRequest(new { error = result.Error });
 
-        // The logic layer sets CreatedAt only on new items, so we can check it
-        // to decide 201 vs 200. (Simpler than returning a separate flag.)
         var isBrandNew = item.Id == 0;
+        var userId = int.Parse(User.FindFirstValue("userId") ?? "0");
+        await AuditLog.Write(_db, _currentShop.ShopId, userId,
+            isBrandNew ? "item_create" : "item_update",
+            $"'{result.Data!.Name}' (R{result.Data.Price:0.00})");
+        await _db.SaveChangesAsync();
         return isBrandNew
             ? CreatedAtAction(nameof(Get), new { id = result.Data!.Id }, result.Data)
             : Ok(result.Data);
@@ -71,6 +80,10 @@ public class MenuItemsController : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         var result = await _logic.DeleteItemAsync(id);
-        return result.IsSuccess ? NoContent() : NotFound(new { error = result.Error });
+        if (!result.IsSuccess) return NotFound(new { error = result.Error });
+        var userId = int.Parse(User.FindFirstValue("userId") ?? "0");
+        await AuditLog.Write(_db, _currentShop.ShopId, userId, "item_delete", $"item #{id}");
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 }

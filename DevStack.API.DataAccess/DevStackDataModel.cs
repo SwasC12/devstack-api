@@ -31,6 +31,14 @@ public class DevStackDataModel : DbContext
     public DbSet<Modifier> Modifiers => Set<Modifier>();
     public DbSet<OrderItemModifier> OrderItemModifiers => Set<OrderItemModifier>();
     public DbSet<OrderRefund> OrderRefunds => Set<OrderRefund>();
+    public DbSet<RecipeLine> RecipeLines => Set<RecipeLine>();
+    public DbSet<Supplier> Suppliers => Set<Supplier>();
+    public DbSet<PurchaseOrder> PurchaseOrders => Set<PurchaseOrder>();
+    public DbSet<PurchaseOrderLine> PurchaseOrderLines => Set<PurchaseOrderLine>();
+    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
+    public DbSet<Expense> Expenses => Set<Expense>();
+    public DbSet<AuditLogEntry> AuditLog => Set<AuditLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -41,6 +49,12 @@ public class DevStackDataModel : DbContext
         modelBuilder.Entity<Order>().HasQueryFilter(o => o.ShopId == _currentShop.ShopId);
         modelBuilder.Entity<Shift>().HasQueryFilter(s => s.ShopId == _currentShop.ShopId);
         modelBuilder.Entity<Discount>().HasQueryFilter(d => d.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<Supplier>().HasQueryFilter(s => s.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<PurchaseOrder>().HasQueryFilter(p => p.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<Customer>().HasQueryFilter(c => c.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<OrderPayment>().HasQueryFilter(p => p.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<Expense>().HasQueryFilter(e => e.ShopId == _currentShop.ShopId);
+        modelBuilder.Entity<AuditLogEntry>().HasQueryFilter(a => a.ShopId == _currentShop.ShopId);
 
         modelBuilder.Entity<Shop>()
             .Property(s => s.IsActive)
@@ -137,6 +151,98 @@ public class DevStackDataModel : DbContext
 
         modelBuilder.Entity<OrderRefund>()
             .HasIndex(r => r.OrderId);
+
+        // ── v1.8 feature indexes ────────────────────────────────────────────────
+        modelBuilder.Entity<OrderPayment>()
+            .HasIndex(p => p.OrderId);
+        modelBuilder.Entity<Expense>()
+            .HasIndex(e => new { e.ShopId, e.CreatedAt });
+        modelBuilder.Entity<Customer>()
+            .HasIndex(c => c.ShopId);
+        modelBuilder.Entity<Supplier>()
+            .HasIndex(s => s.ShopId);
+        modelBuilder.Entity<PurchaseOrder>()
+            .HasIndex(p => new { p.ShopId, p.Status });
+        modelBuilder.Entity<PurchaseOrderLine>()
+            .HasIndex(l => l.PurchaseOrderId);
+        modelBuilder.Entity<AuditLogEntry>()
+            .HasIndex(a => new { a.ShopId, a.CreatedAtUtc });
+
+        modelBuilder.Entity<RecipeLine>()
+            .HasOne<MenuItem>()
+            .WithMany(m => m.RecipeLines)
+            .HasForeignKey(r => r.MenuItemId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<RecipeLine>()
+            .Property(r => r.CostPerUnit)
+            .HasPrecision(18, 2);
+        modelBuilder.Entity<RecipeLine>()
+            .Property(r => r.Quantity)
+            .HasPrecision(18, 3);
+
+        modelBuilder.Entity<PurchaseOrder>()
+            .HasOne<Supplier>()
+            .WithMany()
+            .HasForeignKey(p => p.SupplierId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<PurchaseOrder>()
+            .Property(p => p.FreightCost)
+            .HasPrecision(18, 2);
+        modelBuilder.Entity<PurchaseOrder>()
+            .Property(p => p.DutyCost)
+            .HasPrecision(18, 2);
+        modelBuilder.Entity<PurchaseOrderLine>()
+            .HasOne<PurchaseOrder>()
+            .WithMany(p => p.Lines)
+            .HasForeignKey(l => l.PurchaseOrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<PurchaseOrderLine>()
+            .Property(l => l.UnitCost)
+            .HasPrecision(18, 2);
+        modelBuilder.Entity<PurchaseOrderLine>()
+            .HasOne<MenuItem>()
+            .WithMany()
+            .HasForeignKey(l => l.MenuItemId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<OrderPayment>()
+            .HasOne<Order>()
+            .WithMany(o => o.Payments)
+            .HasForeignKey(p => p.OrderId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<OrderPayment>()
+            .Property(p => p.Amount)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Expense>()
+            .Property(e => e.Amount)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Customer>()
+            .Property(c => c.Balance)
+            .HasPrecision(18, 2);
+        modelBuilder.Entity<Customer>()
+            .Property(c => c.CreditLimit)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Order>()
+            .Property(o => o.TipAmount)
+            .HasPrecision(18, 2);
+        modelBuilder.Entity<Order>()
+            .Property(o => o.ServiceChargeAmount)
+            .HasPrecision(18, 2);
+
+        // House-account link: deleting a customer keeps their order history
+        // (the id just becomes null on those orders).
+        modelBuilder.Entity<Order>()
+            .HasOne<Customer>()
+            .WithMany()
+            .HasForeignKey(o => o.AccountCustomerId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<MenuItem>()
+            .Property(m => m.CostBasis)
+            .HasPrecision(18, 2);
 
         modelBuilder.Entity<Notification>()
             .HasIndex(n => n.UserId);

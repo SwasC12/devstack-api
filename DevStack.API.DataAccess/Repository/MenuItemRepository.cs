@@ -21,12 +21,14 @@ public class MenuItemRepository : IMenuItemRepository
         await _db.MenuItems.AsNoTracking()
             .Include(m => m.Sizes)
             .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
+            .Include(m => m.RecipeLines)
             .OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
 
     public async Task<MenuItem?> GetByIdAsync(int id) =>
         await _db.MenuItems.AsNoTracking()
             .Include(m => m.Sizes)
             .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
+            .Include(m => m.RecipeLines)
             .FirstOrDefaultAsync(m => m.Id == id);
 
     public async Task<MenuItem> AddAsync(MenuItem item)
@@ -41,6 +43,7 @@ public class MenuItemRepository : IMenuItemRepository
         var existing = await _db.MenuItems
             .Include(m => m.Sizes)
             .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
+            .Include(m => m.RecipeLines)
             .FirstOrDefaultAsync(m => m.Id == item.Id);
         if (existing is null) return null;
 
@@ -54,6 +57,32 @@ public class MenuItemRepository : IMenuItemRepository
         existing.ImagePublicId = item.ImagePublicId;
         existing.IsAvailable = item.IsAvailable;
         existing.StockQuantity = item.StockQuantity;
+        existing.CostBasis = Math.Max(0, item.CostBasis);
+
+        // Reconcile recipe lines: keep matching ids (update cost/qty), add new,
+        // drop removed - same pattern as sizes and modifier groups.
+        var incomingRecipe = item.RecipeLines ?? [];
+        existing.RecipeLines.RemoveAll(r => incomingRecipe.All(n => n.Id != r.Id));
+        foreach (var line in incomingRecipe)
+        {
+            var match = existing.RecipeLines.FirstOrDefault(r => r.Id == line.Id && line.Id != 0);
+            if (match is not null)
+            {
+                match.Name = line.Name.Trim();
+                match.CostPerUnit = Math.Max(0, line.CostPerUnit);
+                match.Quantity = Math.Max(0, line.Quantity);
+            }
+            else
+            {
+                existing.RecipeLines.Add(new RecipeLine
+                {
+                    MenuItemId = existing.Id,
+                    Name = line.Name.Trim(),
+                    CostPerUnit = Math.Max(0, line.CostPerUnit),
+                    Quantity = Math.Max(0, line.Quantity)
+                });
+            }
+        }
 
         // Reconcile sizes: keep matching ids (update price/name), add new ones,
         // drop the ones the client removed. Deleting a size is safe mid-day -

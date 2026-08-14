@@ -26,4 +26,11 @@ public class MenuItem
     // Modifier groups (Milk, Extras...). Each group holds its options with
     // price deltas. Empty = plain item.
     public List<ModifierGroup> ModifierGroups { get; set; } = [];
+
+    // Plate/recipe costing: ingredient lines. RecipeCost = Σ(CostPerUnit × Quantity).
+    public List<RecipeLine> RecipeLines { get; set; } = [];
+
+    // Landed/manual cost per unit (set by PO receiving or the item form). Used
+    // for gross-profit when no recipe is defined.
+    public decimal CostBasis { get; set; }
 }

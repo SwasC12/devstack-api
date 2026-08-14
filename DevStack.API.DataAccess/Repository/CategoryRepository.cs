@@ -49,6 +49,7 @@ public class CategoryRepository : ICategoryRepository
         }
 
         existing.Name = category.Name;
+        existing.Station = category.Station is "kitchen" or "bar" ? category.Station : "both";
         await _db.SaveChangesAsync();
         return existing;
     }

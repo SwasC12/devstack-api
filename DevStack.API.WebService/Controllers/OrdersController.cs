@@ -21,7 +21,8 @@ public class OrdersController : ControllerBase
         _currentShop = currentShop;
     }
 
-    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null, string? DineMode = null, string? TableNumber = null);
+    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null, string? DineMode = null, string? TableNumber = null, List<PaymentRequest>? Payments = null, decimal? Tip = null, decimal? ServiceChargePct = null, int? AccountCustomerId = null);
+    public record PaymentRequest(string Method, decimal Amount);
     public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null, string? Note = null, List<int>? ModifierIds = null);
     public record VoidOrderRequest(string Reason);
     public record RefundOrderRequest(decimal Amount, string Reason);
@@ -62,7 +63,8 @@ public class OrdersController : ControllerBase
             CustomerPhone = Trimmed(request.CustomerPhone, 50),
             Notes = Trimmed(request.Notes, 1000),
             DineMode = request.DineMode?.Trim().ToLowerInvariant() == "dinein" ? "dinein" : "takeaway",
-            TableNumber = Trimmed(request.TableNumber, 20)
+            TableNumber = Trimmed(request.TableNumber, 20),
+            AccountCustomerId = request.AccountCustomerId
         };
 
         await using var tx = await _db.Database.BeginTransactionAsync();
@@ -198,23 +200,91 @@ public class OrdersController : ControllerBase
             order.Total -= order.DiscountAmount;
         }
 
-        // Cash: the tendered amount must cover the total; change is computed
-        // server-side, never trusted from the client.
-        if (method == "cash")
+        // Tips + service charge: extras on top of the sale. The cash drawer
+        // sees the grand total; revenue reports keep the sale separate.
+        order.ServiceChargeAmount = request.ServiceChargePct is > 0
+            ? Math.Round(order.Total * Math.Min(request.ServiceChargePct.Value, 50m) / 100m, 2)
+            : 0m;
+        order.TipAmount = request.Tip is > 0 ? Math.Round(request.Tip.Value, 2) : 0m;
+        var grandTotal = order.Total + order.ServiceChargeAmount + order.TipAmount;
+
+        // Payments: split payments carry a list; legacy single-method orders
+        // build one row. Every row lands in OrderPayments so reports can
+        // aggregate by method exactly.
+        List<PaymentRequest> tenders;
+        if (request.Payments is { Count: > 0 })
         {
-            if (request.AmountReceived is null || request.AmountReceived < 0)
-            {
-                await tx.RollbackAsync();
-                return BadRequest(new { error = "Cash payment needs the amount received." });
-            }
-            if (request.AmountReceived < order.Total)
-            {
-                await tx.RollbackAsync();
-                return BadRequest(new { error = "Amount received is less than the total." });
-            }
-            order.AmountReceived = request.AmountReceived;
-            order.ChangeGiven = request.AmountReceived - order.Total;
+            tenders = request.Payments
+                .Where(p => p.Amount > 0)
+                .Select(p => new PaymentRequest(
+                    p.Method?.Trim().ToLowerInvariant() is "card" or "account" ? p.Method.Trim().ToLowerInvariant() : "cash",
+                    Math.Round(p.Amount, 2)))
+                .ToList();
         }
+        else if (method == "cash")
+        {
+            tenders = [new PaymentRequest("cash", grandTotal)];
+        }
+        else
+        {
+            tenders = [new PaymentRequest("card", grandTotal)];
+        }
+
+        var tenderTotal = tenders.Sum(t => t.Amount);
+        var isAccount = tenders.Any(t => t.Method == "account");
+
+        // House account: the full amount goes on the customer's tab. Credit
+        // limit is enforced; the balance is only raised once, atomically.
+        Customer? accountCustomer = null;
+        if (isAccount)
+        {
+            if (request.AccountCustomerId is null)
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = "An account payment needs a customer." });
+            }
+            accountCustomer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == request.AccountCustomerId);
+            if (accountCustomer is null)
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = "That customer doesn't exist." });
+            }
+            var afterBalance = accountCustomer.Balance + tenderTotal;
+            if (accountCustomer.CreditLimit > 0 && afterBalance > accountCustomer.CreditLimit)
+            {
+                await tx.RollbackAsync();
+                return BadRequest(new { error = $"'{accountCustomer.Name}' is over their credit limit (R{accountCustomer.CreditLimit:0.00})." });
+            }
+            accountCustomer.Balance = afterBalance;
+            order.PaymentMethod = "account";
+        }
+
+        // The tenders must cover the grand total exactly (server-side, never
+        // trusted from the client). Cash change is computed against the cash
+        // portion only.
+        if (Math.Abs(tenderTotal - grandTotal) > 0.01m)
+        {
+            await tx.RollbackAsync();
+            return BadRequest(new { error = $"Payments total R{tenderTotal:0.00} doesn't match the R{grandTotal:0.00} due." });
+        }
+
+        var cashPaid = tenders.Where(t => t.Method == "cash").Sum(t => t.Amount);
+        var nonCashPaid = tenderTotal - cashPaid;
+        if (cashPaid > nonCashPaid)
+        {
+            order.AmountReceived = cashPaid;
+            var change = cashPaid - nonCashPaid;
+            if (change > 0.005m) order.ChangeGiven = Math.Round(change, 2);
+        }
+
+        var now = DateTime.UtcNow.AddHours(2);
+        order.Payments = tenders.Select(t => new OrderPayment
+        {
+            ShopId = order.ShopId,
+            Method = t.Method,
+            Amount = t.Amount,
+            CreatedAt = now
+        }).ToList();
 
         _db.Orders.Add(order);
 
@@ -226,13 +296,13 @@ public class OrdersController : ControllerBase
             var admins = await _db.Users.Where(u => u.Role == "admin" && u.ShopId == order.ShopId).ToListAsync();
             if (admins.Count > 0)
             {
-                var now = DateTime.UtcNow;
+                var alertNow = DateTime.UtcNow;
                 alertRows = new List<Notification>();
                 foreach (var a in lowStockAlerts)
                 {
                     var body = $"'{a.Name}' is running low - only {a.Remaining} left.";
                     foreach (var admin in admins)
-                        alertRows.Add(new Notification { ShopId = order.ShopId, UserId = admin.Id, Title = "Low stock", Body = body, Type = "alert", CreatedAtUtc = now });
+                        alertRows.Add(new Notification { ShopId = order.ShopId, UserId = admin.Id, Title = "Low stock", Body = body, Type = "alert", CreatedAtUtc = alertNow });
                 }
                 _db.Notifications.AddRange(alertRows);
             }
@@ -267,6 +337,7 @@ public class OrdersController : ControllerBase
         var orders = await query
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
             .Include(o => o.Refunds)
+            .Include(o => o.Payments)
             .OrderByDescending(o => o.CreatedAt)
             .Skip(offset).Take(limit)
             .ToListAsync();
@@ -296,6 +367,11 @@ public class OrdersController : ControllerBase
             o.VoidedAt,
             o.VoidedByUserId,
             o.VoidReason,
+            o.HeldAt,
+            o.TipAmount,
+            o.ServiceChargeAmount,
+            o.AccountCustomerId,
+            Payments = o.Payments.Select(p => new { p.Method, p.Amount }),
             RefundedAmount = o.Refunds.Sum(r => r.Amount),
             Refunds = o.Refunds.Select(r => new { r.Id, r.Amount, r.Reason, r.PaymentMethod, r.CreatedAt }),
             Items = o.Items.Select(i => new
@@ -324,6 +400,16 @@ public class OrdersController : ControllerBase
         order.VoidedAt = DateTime.UtcNow.AddHours(2);
         order.VoidedByUserId = int.Parse(User.FindFirstValue("userId")!);
         order.VoidReason = reason;
+        await AuditLog.Write(_db, order.ShopId, order.VoidedByUserId, "order_void", $"#{order.Id} R{order.Total:0.00} - {reason}");
+
+        // House account: a voided account order takes the charge back off the
+        // customer's tab (the sale never happened).
+        if (order.AccountCustomerId is not null)
+        {
+            var customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == order.AccountCustomerId);
+            if (customer is not null)
+                customer.Balance = Math.Max(0, customer.Balance - (order.Total + order.TipAmount + order.ServiceChargeAmount));
+        }
 
         // Put the stock back, one line at a time (quantities are already
         // aggregated, so the total restock is exact).
@@ -374,6 +460,14 @@ public class OrdersController : ControllerBase
             CreatedAt = DateTime.UtcNow.AddHours(2),
             UserId = int.Parse(User.FindFirstValue("userId")!)
         });
+        await AuditLog.Write(_db, order.ShopId, int.Parse(User.FindFirstValue("userId")!), "order_refund", $"#{order.Id} R{request.Amount:0.00} - {reason}");
+        // House account: the refund reduces what the customer owes.
+        if (order.AccountCustomerId is not null)
+        {
+            var customer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == order.AccountCustomerId);
+            if (customer is not null)
+                customer.Balance = Math.Max(0, customer.Balance - Math.Round(request.Amount, 2));
+        }
         await _db.SaveChangesAsync();
         return Ok();
     }
@@ -397,54 +491,141 @@ public class OrdersController : ControllerBase
     }
 
     // GET /api/orders/kitchen - any logged-in user. Live queue for the kitchen
-    // display tablet: not voided, not yet completed, from the last `minutes`.
-    // Items + modifiers + notes only (no prices) - it's the make list.
+    // display tablet: not voided, not completed, not held, from the last
+    // `minutes`. `station=kitchen|bar` routes by category station - the order
+    // shows if any of its items belong to that station (items are filtered to
+    // the station's own). Items + modifiers + notes only (no prices).
     [Authorize]
     [HttpGet("kitchen")]
-    public async Task<ActionResult> GetKitchenOrders([FromQuery] int minutes = 120)
+    public async Task<ActionResult> GetKitchenOrders([FromQuery] int minutes = 120, [FromQuery] string? station = null)
     {
         minutes = Math.Clamp(minutes, 15, 480);
         var cutoff = DateTime.UtcNow.AddHours(2).AddMinutes(-minutes);
+        var stationFilter = station is "kitchen" or "bar" ? station : null;
 
-        // Lightweight projection first: the safety-net poll arrives every 5 min
-        // and usually nothing changed - answer 304 without loading the full
-        // order graph (no item/modifier joins, no JSON). Tag rotates on any
-        // change to the queue: count, newest order, id-xor, total item lines.
+        // Station map: menu item id → station (via its category). Built once
+        // per call; the category table is small.
+        var catStation = await _db.Categories
+            .Select(c => new { c.Name, c.Station }).ToListAsync();
+        var catStationMap = catStation.ToDictionary(c => c.Name.ToLowerInvariant(), c => c.Station);
+        var itemCat = await _db.MenuItems
+            .Select(m => new { m.Id, m.Category }).ToListAsync();
+        var itemStation = itemCat.ToDictionary(m => m.Id,
+            m => catStationMap.TryGetValue(m.Category.ToLowerInvariant(), out var st) ? st : "both");
+        static bool Matches(string st, string? filter) =>
+            filter is null || st == "both" || st == filter;
+
+        // Lightweight projection first (ETag safety net). With a station filter
+        // we need each order's item menu ids to decide membership.
         var queue = await _db.Orders
-            .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.CreatedAt >= cutoff)
-            .Select(o => new { o.Id, o.CreatedAt, ItemCount = o.Items.Count })
+            .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.HeldAt == null && o.CreatedAt >= cutoff)
+            .Select(o => new { o.Id, o.CreatedAt, ItemIds = o.Items.Select(i => i.MenuItemId).ToList() })
             .ToListAsync();
-        var tag = $"\"{_currentShop.ShopId}:{queue.Count}:{(queue.Count == 0 ? 0 : queue.Max(o => o.CreatedAt.Ticks))}:{queue.Aggregate(0L, (a, o) => a ^ o.Id)}:{queue.Sum(o => o.ItemCount)}\"";
+        queue = queue.Where(o => stationFilter is null || o.ItemIds.Any(id => Matches(itemStation.GetValueOrDefault(id, "both"), stationFilter))).ToList();
+        var tag = $"\"{_currentShop.ShopId}:{queue.Count}:{(queue.Count == 0 ? 0 : queue.Max(o => o.CreatedAt.Ticks))}:{queue.Aggregate(0L, (a, o) => a ^ o.Id)}:{queue.Sum(o => o.ItemIds.Count)}\"";
         if (Request.Headers.IfNoneMatch.ToString() == tag)
             return StatusCode(StatusCodes.Status304NotModified);
 
         // Queue actually changed (or first call) - load the full make-list.
         var orders = await _db.Orders
-            .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.CreatedAt >= cutoff)
+            .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.HeldAt == null && o.CreatedAt >= cutoff)
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
             .OrderBy(o => o.CreatedAt)
             .ToListAsync();
 
         Response.Headers.ETag = tag;
-        return Ok(orders.Select(o => new
-        {
-            o.Id,
-            o.CreatedAt,
-            o.CustomerName,
-            o.Notes,
-            o.DineMode,
-            o.TableNumber,
-            Items = o.Items.Select(i => new
+        return Ok(orders
+            .Where(o => stationFilter is null || o.Items.Any(i => Matches(itemStation.GetValueOrDefault(i.MenuItemId, "both"), stationFilter)))
+            .Select(o => new
             {
-                i.Name, i.Quantity, i.SizeName, i.Note,
-                Modifiers = i.Modifiers.Select(m => m.Name)
-            })
-        }));
+                o.Id,
+                o.CreatedAt,
+                o.CustomerName,
+                o.Notes,
+                o.DineMode,
+                o.TableNumber,
+                Items = o.Items
+                    .Where(i => stationFilter is null || Matches(itemStation.GetValueOrDefault(i.MenuItemId, "both"), stationFilter))
+                    .Select(i => new
+                    {
+                        i.Name, i.Quantity, i.SizeName, i.Note,
+                        Modifiers = i.Modifiers.Select(m => m.Name)
+                    })
+            }));
+    }
+
+    // GET /api/orders/kitchen/held - orders the kitchen put on hold (same
+    // station filtering). They sit here until "Send" puts them back in the
+    // live queue. No ETag - this list is small and changes on tap.
+    [Authorize]
+    [HttpGet("kitchen/held")]
+    public async Task<ActionResult> GetHeldOrders([FromQuery] string? station = null)
+    {
+        var stationFilter = station is "kitchen" or "bar" ? station : null;
+        var catStation = await _db.Categories.Select(c => new { c.Name, c.Station }).ToListAsync();
+        var catStationMap = catStation.ToDictionary(c => c.Name.ToLowerInvariant(), c => c.Station);
+        var itemCat = await _db.MenuItems.Select(m => new { m.Id, m.Category }).ToListAsync();
+        var itemStation = itemCat.ToDictionary(m => m.Id,
+            m => catStationMap.TryGetValue(m.Category.ToLowerInvariant(), out var st) ? st : "both");
+        static bool Matches(string st, string? filter) =>
+            filter is null || st == "both" || st == filter;
+
+        var orders = await _db.Orders
+            .Where(o => o.VoidedAt == null && o.CompletedAt == null && o.HeldAt != null)
+            .Include(o => o.Items).ThenInclude(i => i.Modifiers)
+            .OrderBy(o => o.HeldAt)
+            .ToListAsync();
+
+        return Ok(orders
+            .Where(o => stationFilter is null || o.Items.Any(i => Matches(itemStation.GetValueOrDefault(i.MenuItemId, "both"), stationFilter)))
+            .Select(o => new
+            {
+                o.Id,
+                o.HeldAt,
+                o.CustomerName,
+                o.Notes,
+                o.DineMode,
+                o.TableNumber,
+                Items = o.Items
+                    .Where(i => stationFilter is null || Matches(itemStation.GetValueOrDefault(i.MenuItemId, "both"), stationFilter))
+                    .Select(i => new
+                    {
+                        i.Name, i.Quantity, i.SizeName, i.Note,
+                        Modifiers = i.Modifiers.Select(m => m.Name)
+                    })
+            }));
+    }
+
+    // POST /api/orders/{id}/hold - kitchen pauses the order (held strip).
+    // POST /api/orders/{id}/send - puts it back in the live queue.
+    [Authorize]
+    [HttpPost("{id:int}/hold")]
+    public async Task<IActionResult> HoldOrder(int id)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id);
+        if (order is null) return NotFound();
+        if (order.VoidedAt is not null || order.CompletedAt is not null)
+            return BadRequest(new { error = "This order is finished." });
+        order.HeldAt = DateTime.UtcNow.AddHours(2);
+        await _db.SaveChangesAsync();
+        return Ok();
+    }
+
+    [Authorize]
+    [HttpPost("{id:int}/send")]
+    public async Task<IActionResult> SendOrder(int id)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id);
+        if (order is null) return NotFound();
+        order.HeldAt = null;
+        await _db.SaveChangesAsync();
+        return Ok();
     }
 
     // GET /api/orders/cashup?date=yyyy-MM-dd - admin only. End-of-day cash-up:
-    // totals per payment method, discounts, refunds and per-cashier breakdown
-    // for a day (defaults to today, SAST). Voided orders excluded everywhere.
+    // totals per payment method (split payments included), tips, expenses,
+    // discounts, refunds and per-cashier breakdown for a day (defaults to
+    // today, SAST). Voided orders excluded everywhere.
     [Authorize(Roles = "admin")]
     [HttpGet("cashup")]
     public async Task<ActionResult> GetCashup([FromQuery] string? date = null)
@@ -457,23 +638,31 @@ public class OrdersController : ControllerBase
         var orders = await _db.Orders
             .Where(o => o.VoidedAt == null && o.CreatedAt >= dayStart && o.CreatedAt < dayEnd)
             .Include(o => o.Refunds)
+            .Include(o => o.Payments)
             .ToListAsync();
 
-        decimal NetRevenue(Order o) => o.Total - o.Refunds.Sum(r => r.Amount);
+        // Money in per method: prefer the split-payment rows; legacy orders
+        // (pre-split) fall back to the order-level fields.
+        decimal Paid(Order o, string method) =>
+            o.Payments.Count > 0
+                ? o.Payments.Where(p => p.Method == method).Sum(p => p.Amount)
+                : (o.PaymentMethod == method ? o.Total + o.TipAmount + o.ServiceChargeAmount : 0m);
         decimal RefundsOf(Order o) => o.Refunds.Sum(r => r.Amount);
+        decimal CashIn(Order o) => Paid(o, "cash") + Paid(o, "card") + Paid(o, "account");
 
-        var byMethod = orders
-            .GroupBy(o => o.PaymentMethod)
-            .Select(g => new
+        var byMethod = new[] { "cash", "card", "account" }
+            .Select(m => new
             {
-                method = g.Key,
-                gross = g.Sum(o => o.Total),
-                refunds = g.Sum(RefundsOf),
-                net = g.Sum(NetRevenue),
-                orders = g.Count()
+                method = m,
+                gross = orders.Sum(o => Paid(o, m)),
+                refunds = orders.Where(o => o.PaymentMethod == m).Sum(RefundsOf),
+                orders = orders.Count(o => o.PaymentMethod == m || o.Payments.Any(p => p.Method == m))
             })
-            .OrderBy(g => g.method)
             .ToList();
+
+        var expenses = await _db.Expenses
+            .Where(e => e.CreatedAt >= dayStart && e.CreatedAt < dayEnd)
+            .ToListAsync();
 
         var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct().ToList();
         var users = await _db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.DisplayName);
@@ -485,11 +674,18 @@ public class OrdersController : ControllerBase
                 name = users.TryGetValue(g.Key, out var n) ? n : "Unknown",
                 orders = g.Count(),
                 sales = g.Sum(o => o.Total),
+                tips = g.Sum(o => o.TipAmount),
                 refunds = g.Sum(RefundsOf),
-                net = g.Sum(NetRevenue)
+                net = g.Sum(CashIn) - g.Sum(RefundsOf)
             })
             .OrderByDescending(c => c.net)
             .ToList();
+
+        var cashIn = orders.Sum(CashIn);
+        var refunds = orders.Sum(RefundsOf);
+        var tips = orders.Sum(o => o.TipAmount);
+        var serviceCharges = orders.Sum(o => o.ServiceChargeAmount);
+        var expenseTotal = expenses.Sum(e => e.Amount);
 
         return Ok(new
         {
@@ -499,11 +695,16 @@ public class OrdersController : ControllerBase
                 orders = orders.Count,
                 gross = orders.Sum(o => o.Total),
                 discounts = orders.Sum(o => o.DiscountAmount),
-                refunds = orders.Sum(RefundsOf),
-                net = orders.Sum(NetRevenue)
+                tips,
+                serviceCharges,
+                refunds,
+                expenses = expenseTotal,
+                cashIn,
+                net = cashIn - refunds - expenseTotal
             },
             byMethod,
-            cashiers
+            cashiers,
+            expenseItems = expenses.Select(e => new { e.Id, e.Category, e.Amount, e.Note, e.CreatedAt })
         });
     }
 
@@ -575,17 +776,27 @@ public class OrdersController : ControllerBase
 
         // Per-category: line items don't carry the category, so join to the
         // current menu items (deleted/renamed items fall into "Other").
-        var menuItems = await _db.MenuItems.ToDictionaryAsync(m => m.Id, m => m.Category);
+        // Cost per unit = recipe cost when a recipe exists, else CostBasis -
+        // that feeds gross-profit per category.
+        var costData = await _db.MenuItems
+            .Select(m => new { m.Id, m.Category, m.CostBasis, RecipeCost = m.RecipeLines.Sum(r => r.CostPerUnit * r.Quantity) })
+            .ToListAsync();
+        var costByItem = costData.ToDictionary(m => m.Id, m => m.RecipeCost > 0 ? m.RecipeCost : m.CostBasis);
         var categories = items
-            .GroupBy(i => menuItems.TryGetValue(i.MenuItemId, out var cat) && !string.IsNullOrWhiteSpace(cat) ? cat : "Other")
+            .GroupBy(i => costData.FirstOrDefault(c => c.Id == i.MenuItemId)?.Category is { Length: > 0 } cat ? cat : "Other")
             .Select(g => new
             {
                 name = g.Key,
                 quantity = g.Sum(i => i.Quantity),
-                revenue = g.Sum(i => i.Price * i.Quantity)
+                revenue = g.Sum(i => i.Price * i.Quantity),
+                cost = g.Sum(i => costByItem.TryGetValue(i.MenuItemId, out var c) ? c * i.Quantity : 0m),
+                grossProfit = g.Sum(i => i.Price * i.Quantity - (costByItem.TryGetValue(i.MenuItemId, out var c2) ? c2 * i.Quantity : 0m))
             })
             .OrderByDescending(g => g.revenue)
             .ToList();
+
+        var totalCost = items.Sum(i => costByItem.TryGetValue(i.MenuItemId, out var c) ? c * i.Quantity : 0m);
+        var totalRevenue = items.Sum(i => i.Price * i.Quantity);
 
         return Ok(new
         {
@@ -594,12 +805,72 @@ public class OrdersController : ControllerBase
             {
                 revenue = orders.Sum(o => NetRevenue(o.Id, o.Total)),
                 orders = orders.Count,
-                items = items.Sum(i => i.Quantity)
+                items = items.Sum(i => i.Quantity),
+                cost = totalCost,
+                grossProfit = totalRevenue - totalCost,
+                grossMarginPct = totalRevenue > 0 ? Math.Round((totalRevenue - totalCost) / totalRevenue * 100m, 1) : 0m
             },
             daily,
             cashiers,
             categories
         });
+    }
+
+    // GET /api/orders/journal?from&to - admin only. The transaction journal:
+    // every money event in chronological order with a running cash balance.
+    // Sales/tips/service charges add; voids, refunds and expenses subtract.
+    [Authorize(Roles = "admin")]
+    [HttpGet("journal")]
+    public async Task<ActionResult> GetJournal([FromQuery] string? from = null, [FromQuery] string? to = null)
+    {
+        var query = _db.Orders.Where(o => o.VoidedAt == null);
+        if (DateTime.TryParse(from, out var f)) query = query.Where(o => o.CreatedAt >= f.Date);
+        if (DateTime.TryParse(to, out var t)) query = query.Where(o => o.CreatedAt < t.Date.AddDays(1));
+        var orders = await query.Select(o => new
+        {
+            o.Id, o.CreatedAt, o.Total, o.TipAmount, o.ServiceChargeAmount, o.PaymentMethod,
+            o.CustomerName, o.UserId, o.AccountCustomerId
+        }).ToListAsync();
+
+        var fromD = DateTime.TryParse(from, out var ff) ? ff.Date : DateTime.MinValue;
+        var toD = DateTime.TryParse(to, out var tt) ? tt.Date.AddDays(1) : DateTime.MaxValue;
+        var refunds = await _db.OrderRefunds
+            .Where(r => r.CreatedAt >= fromD && r.CreatedAt < toD)
+            .Select(r => new { r.Id, r.OrderId, r.Amount, r.Reason, r.CreatedAt }).ToListAsync();
+        var expenses = await _db.Expenses
+            .Where(e => e.CreatedAt >= fromD && e.CreatedAt < toD)
+            .Select(e => new { e.Id, e.Category, e.Amount, e.Note, e.CreatedAt }).ToListAsync();
+
+        var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct()
+            .Concat(refunds.Where(r => r.Id > 0).Select(_ => 0)) // no-op, refunds carry no user here
+            .Distinct().ToList();
+        var users = await _db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.DisplayName);
+
+        var events = new List<(DateTime At, string Type, string Ref, string Detail, decimal Delta)>();
+        foreach (var o in orders)
+        {
+            events.Add((o.CreatedAt, "sale", $"#{o.Id}", $"{(o.CustomerName is null ? "Walk-in" : o.CustomerName)} · {o.PaymentMethod}", o.Total));
+            if (o.TipAmount > 0) events.Add((o.CreatedAt, "tip", $"#{o.Id}", "Customer tip", o.TipAmount));
+            if (o.ServiceChargeAmount > 0) events.Add((o.CreatedAt, "service_charge", $"#{o.Id}", "Service charge", o.ServiceChargeAmount));
+        }
+        foreach (var v in await _db.Orders.Where(o => o.VoidedAt != null
+                && (fromD == DateTime.MinValue || o.CreatedAt >= fromD) && (toD == DateTime.MaxValue || o.CreatedAt < toD))
+            .Select(o => new { o.Id, VoidedAt = o.VoidedAt!.Value, o.VoidReason, o.Total }).ToListAsync())
+            events.Add((v.VoidedAt, "void", $"#{v.Id}", v.VoidReason ?? "Voided", -v.Total));
+        foreach (var r in refunds)
+            events.Add((r.CreatedAt, "refund", $"#{r.OrderId}", r.Reason ?? "Refund", -r.Amount));
+        foreach (var e in expenses)
+            events.Add((e.CreatedAt, "expense", $"E{e.Id}", $"{e.Category}{(e.Note is null ? "" : $" · {e.Note}")}", -e.Amount));
+
+        var ordered = events.OrderBy(e => e.At).ToList();
+        decimal balance = 0;
+        var rows = ordered.Select(e =>
+        {
+            balance += e.Delta;
+            return new { e.At, e.Type, e.Ref, e.Detail, e.Delta, Balance = balance };
+        }).ToList();
+
+        return Ok(new { openingBalance = 0m, closingBalance = balance, events = rows });
     }
 
     // GET /api/orders/summary — analytics (admin only). Voided orders are

@@ -1,5 +1,6 @@
 using DevStack.API.DataAccess;
 using DevStack.API.Models;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -25,6 +26,8 @@ public class DiscountsController : ControllerBase
         _db = db;
         _currentShop = currentShop;
     }
+
+    private int UserId => int.Parse(User.FindFirstValue("userId") ?? "0");
 
     // GET api/discounts — every discount for this shop, plus whether it is live
     // RIGHT NOW (SAST), so the POS can badge "happy hour" without clock math.
@@ -86,6 +89,7 @@ public class DiscountsController : ControllerBase
         if (discount.Id == 0)
         {
             _db.Discounts.Add(discount);
+            await AuditLog.Write(_db, _currentShop.ShopId, UserId, "discount_create", $"'{discount.Name}' ({discount.Type} {discount.Value})");
             await _db.SaveChangesAsync();
             return CreatedAtAction(nameof(GetAll), new { id = discount.Id }, discount);
         }
@@ -100,6 +104,7 @@ public class DiscountsController : ControllerBase
         existing.DayOfWeek = discount.DayOfWeek;
         existing.StartTime = discount.StartTime;
         existing.EndTime = discount.EndTime;
+        await AuditLog.Write(_db, _currentShop.ShopId, UserId, "discount_update", $"'{existing.Name}' ({existing.Type} {existing.Value})");
         await _db.SaveChangesAsync();
         return Ok(existing);
     }
@@ -113,6 +118,7 @@ public class DiscountsController : ControllerBase
         if (discount is null) return NotFound();
 
         _db.Discounts.Remove(discount);
+        await AuditLog.Write(_db, _currentShop.ShopId, UserId, "discount_delete", $"'{discount.Name}'");
         await _db.SaveChangesAsync();
         return NoContent();
     }
