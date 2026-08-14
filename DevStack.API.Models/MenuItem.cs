@@ -5,6 +5,10 @@ public class MenuItem
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
+    // Referential integrity: the Categories table is the source of truth.
+    // `Category` (the name string) is kept in sync as the denormalized label
+    // the POS groups by - renaming a category cascades to items via the repo.
+    public int? CategoryId { get; set; }
     public decimal Price { get; set; }
     public string? Description { get; set; }
     public string? ImageUrl { get; set; }

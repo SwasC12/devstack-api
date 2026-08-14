@@ -31,6 +31,7 @@ builder.Services.AddScoped<ICurrentShop, CurrentShopService>();
 // lockout service. The "auth" policy is applied via [EnableRateLimiting].
 builder.Services.AddSingleton<IAuthThrottle, AuthThrottleService>();
 builder.Services.AddSingleton<IPushService, PushService>();
+builder.Services.AddSingleton<EmailService>();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

@@ -50,6 +50,15 @@ public class DevStackDataModel : DbContext
             .Property(i => i.Price)
             .HasPrecision(18, 2);
 
+        // CategoryId is a real FK now (the name string stays as the display
+        // label). A category with items can't be deleted - the FK enforces it
+        // even if a future code path skips the friendly guard in CategoryLogic.
+        modelBuilder.Entity<MenuItem>()
+            .HasOne<Category>()
+            .WithMany()
+            .HasForeignKey(m => m.CategoryId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         modelBuilder.Entity<Order>()
             .Property(o => o.Total)
             .HasPrecision(18, 2);

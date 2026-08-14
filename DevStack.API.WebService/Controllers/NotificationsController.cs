@@ -17,11 +17,13 @@ public class NotificationsController : ControllerBase
 {
     private readonly DevStackDataModel _db;
     private readonly IPushService _push;
+    private readonly EmailService _email;
 
-    public NotificationsController(DevStackDataModel db, IPushService push)
+    public NotificationsController(DevStackDataModel db, IPushService push, EmailService email)
     {
         _db = db;
         _push = push;
+        _email = email;
     }
 
     public record BroadcastRequest(string Title, string Body, string? Type = null, int? ShopId = null);
@@ -98,6 +100,102 @@ public class NotificationsController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok(new { delivered = rows.Count, pushed = tokens.Count - failed });
+    }
+
+    public record EmailOwnerRequest(string Subject, string Body);
+
+    // POST api/notifications/email-owner - superadmin: server-side email to one
+    // shop's owner. Requires SMTP configured (Smtp:* config). The UI falls back
+    // to a mailto: draft when this returns 503 (not configured) or 400 (no
+    // owner email on file).
+    [Authorize(Roles = "superadmin")]
+    [HttpPost("email-owner")]
+    public async Task<ActionResult> EmailOwner(int shopId, EmailOwnerRequest request)
+    {
+        var subject = request.Subject?.Trim();
+        var body = request.Body?.Trim();
+        if (string.IsNullOrEmpty(subject) || string.IsNullOrEmpty(body))
+            return BadRequest(new { error = "Subject and body are required." });
+
+        var shop = await _db.Shops.FirstOrDefaultAsync(s => s.Id == shopId);
+        if (shop is null)
+            return BadRequest(new { error = "That shop doesn't exist." });
+        if (string.IsNullOrWhiteSpace(shop.OwnerEmail))
+            return BadRequest(new { error = "This shop has no owner email on file - add one in Owner contact." });
+
+        var email = _db.Shops.Where(s => s.Id == shopId).Select(s => s.OwnerEmail!).First();
+        try
+        {
+            await _email.SendAsync(email, subject, body);
+        }
+        catch (InvalidOperationException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { error = "Server email is not configured - use the mailto draft instead." });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = $"Email failed to send: {ex.Message}" });
+        }
+
+        _db.PlatformEvents.Add(new PlatformEvent
+        {
+            Type = "email_sent",
+            ShopId = shopId,
+            Detail = $"\"{subject}\" → {email}",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+        return Ok(new { sentTo = email });
+    }
+
+    // POST api/notifications/email-broadcast - superadmin: same subject/body to
+    // every shop that has an owner email on file. Best-effort per recipient:
+    // one bad address doesn't sink the rest. Only available when SMTP is set up.
+    [Authorize(Roles = "superadmin")]
+    [HttpPost("email-broadcast")]
+    public async Task<ActionResult> EmailBroadcast(EmailOwnerRequest request)
+    {
+        var subject = request.Subject?.Trim();
+        var body = request.Body?.Trim();
+        if (string.IsNullOrEmpty(subject) || string.IsNullOrEmpty(body))
+            return BadRequest(new { error = "Subject and body are required." });
+
+        var targets = await _db.Shops
+            .Where(s => s.OwnerEmail != null && s.OwnerEmail != "")
+            .Select(s => new { s.Id, s.Name, OwnerEmail = s.OwnerEmail! })
+            .ToListAsync();
+        if (targets.Count == 0)
+            return BadRequest(new { error = "No shops have an owner email on file yet." });
+
+        if (!_email.IsConfigured)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { error = "Server email is not configured." });
+
+        var sent = 0;
+        var failed = 0;
+        foreach (var t in targets)
+        {
+            try
+            {
+                await _email.SendAsync(t.OwnerEmail, subject, body);
+                sent++;
+            }
+            catch
+            {
+                failed++;
+            }
+        }
+
+        _db.PlatformEvents.Add(new PlatformEvent
+        {
+            Type = "email_broadcast",
+            Detail = $"\"{subject}\" → {sent} shop{(sent == 1 ? "" : "s")}{(failed > 0 ? $", {failed} failed" : "")}",
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+        return Ok(new { sent, failed });
     }
 
     // GET api/notifications — the signed-in user's inbox, unread first.

@@ -17,10 +17,15 @@ namespace DevStack.API.WebService.Controllers;
 public class ShopsController : ControllerBase
 {
     private readonly DevStackDataModel _db;
+    private readonly EmailService _email;
 
-    public ShopsController(DevStackDataModel db) => _db = db;
+    public ShopsController(DevStackDataModel db, EmailService email)
+    {
+        _db = db;
+        _email = email;
+    }
 
-    public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName);
+    public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName, string? OwnerEmail = null);
     public record UpdateShopRequest(string Name, string? LogoUrl, string? ReceiptQrUrl, string? KitchenUrl = null);
     public record SetShopStatusRequest(bool IsActive);
     public record UpdateOwnerRequest(string? OwnerEmail, string? OwnerPhone);
@@ -100,6 +105,39 @@ public class ShopsController : ControllerBase
             CreatedAtUtc = DateTime.UtcNow
         });
         await _db.SaveChangesAsync();
+
+        // Welcome email: only when SMTP is configured and an owner email was
+        // given. Best-effort - a mail failure never fails shop creation (the
+        // one-time password is still returned in the response).
+        var ownerEmail = request.OwnerEmail?.Trim();
+        if (!string.IsNullOrEmpty(ownerEmail) && _email.IsConfigured)
+        {
+            try
+            {
+                await _email.SendAsync(ownerEmail,
+                    $"Welcome to CoffeeShop Pro - {shop.Name} is ready",
+                    $"Hi {adminDisplayName},\n\n" +
+                    $"Your shop '{shop.Name}' ({shop.Code}) is live.\n\n" +
+                    $"Sign in at the POS app with:\n" +
+                    $"  Shop code: {shop.Code}\n" +
+                    $"  Username:  {adminUsername}\n" +
+                    $"  Password:  {request.AdminPassword}\n\n" +
+                    $"Change the password after your first login. - The CoffeeShop Pro team");
+
+                _db.PlatformEvents.Add(new PlatformEvent
+                {
+                    Type = "email_sent",
+                    ShopId = shop.Id,
+                    Detail = $"Welcome email → {ownerEmail}",
+                    CreatedAtUtc = DateTime.UtcNow
+                });
+                await _db.SaveChangesAsync();
+            }
+            catch
+            {
+                // ignored - the response below still carries the credentials
+            }
+        }
 
         return CreatedAtAction(nameof(GetAll), new { id = shop.Id }, new { shop.Id, shop.Name, shop.Code, shop.IsActive, shop.CreatedAt });
     }

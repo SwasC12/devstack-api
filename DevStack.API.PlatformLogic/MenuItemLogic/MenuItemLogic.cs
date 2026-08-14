@@ -126,16 +126,26 @@ public class MenuItemLogic : IMenuItemLogic
             // Categories are a real table now, but items still carry a plain
             // string. Keep the two in sync: if the item names a category that
             // doesn't exist yet, create it so the Categories tab always reflects
-            // what items actually use (and the admin dropdown can find it).
-            if (item.Category.Length > 0
-                && await _categoryRepo.GetByNameAsync(item.Category) is null)
+            // what items actually use (and the admin dropdown can find it). The
+            // CategoryId FK is set here too - the string is the display label,
+            // the id is the relationship.
+            if (item.Category.Length > 0)
             {
-                await _categoryRepo.AddAsync(new Category
+                var category = await _categoryRepo.GetByNameAsync(item.Category);
+                if (category is null)
                 {
-                    Name = item.Category,
-                    ShopId = _currentShop.ShopId,
-                    CreatedAt = DateTime.UtcNow.AddHours(2)
-                });
+                    category = await _categoryRepo.AddAsync(new Category
+                    {
+                        Name = item.Category,
+                        ShopId = _currentShop.ShopId,
+                        CreatedAt = DateTime.UtcNow.AddHours(2)
+                    });
+                }
+                item.CategoryId = category.Id;
+            }
+            else
+            {
+                item.CategoryId = null;
             }
 
             if (item.Id == 0)
