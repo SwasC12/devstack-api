@@ -245,19 +245,36 @@ public class OrdersController : ControllerBase
     }
 
     // GET /api/orders — admin only. Enriched with the cashier's display name
-    // so the history view can say who sold what.
+    // so the history view can say who sold what. Bounded: optional from/to
+    // date range (defaults to the last 30 days) + offset/limit paging, with
+    // the total row count in X-Total-Count so the UI can show "load more".
+    // The whole history used to be loaded in one shot — that's the query that
+    // got slower every single day.
     [Authorize(Roles = "admin")]
     [HttpGet]
-    public async Task<ActionResult> GetOrders()
+    public async Task<ActionResult> GetOrders([FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] int limit = 200, [FromQuery] int offset = 0)
     {
-        var orders = await _db.Orders
+        limit = Math.Clamp(limit, 1, 500);
+        offset = Math.Max(offset, 0);
+
+        var query = _db.Orders.AsQueryable();
+        if (DateTime.TryParse(from, out var fromDate))
+            query = query.Where(o => o.CreatedAt >= fromDate.Date);
+        if (DateTime.TryParse(to, out var toDate))
+            query = query.Where(o => o.CreatedAt < toDate.Date.AddDays(1));
+
+        var total = await query.CountAsync();
+        var orders = await query
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
             .Include(o => o.Refunds)
-            .OrderByDescending(o => o.CreatedAt).ToListAsync();
+            .OrderByDescending(o => o.CreatedAt)
+            .Skip(offset).Take(limit)
+            .ToListAsync();
 
         var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct().ToList();
         var users = await _db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.DisplayName);
 
+        Response.Headers["X-Total-Count"] = total.ToString();
         return Ok(orders.Select(o => new
         {
             o.Id,
@@ -510,6 +527,8 @@ public class OrdersController : ControllerBase
     // GET /api/orders/analytics?days=14 - admin only. Owner analytics: daily
     // revenue series, per-cashier totals and per-category sales. Voided orders
     // excluded; everything scoped to the current shop by the global filter.
+    // Lightweight: only the columns needed for the report are pulled (no
+    // item/modifier/refund graph), and the window is bounded by `days`.
     [Authorize(Roles = "admin")]
     [HttpGet("analytics")]
     public async Task<ActionResult> GetAnalytics([FromQuery] int days = 14)
@@ -519,16 +538,24 @@ public class OrdersController : ControllerBase
 
         var orders = await _db.Orders
             .Where(o => o.VoidedAt == null && o.CreatedAt >= from)
-            .Include(o => o.Items)
-            .Include(o => o.Refunds)
+            .Select(o => new { o.Id, o.CreatedAt, o.Total, o.UserId })
             .ToListAsync();
+        var ids = orders.Select(o => o.Id).ToList();
 
-        decimal NetRevenue(Order o) => o.Total - o.Refunds.Sum(r => r.Amount);
+        var refunds = ids.Count == 0 ? []
+            : await _db.OrderRefunds.Where(r => ids.Contains(r.OrderId))
+                .Select(r => new { r.OrderId, r.Amount }).ToListAsync();
+        var items = ids.Count == 0 ? []
+            : await _db.OrderItems.Where(i => ids.Contains(i.OrderId))
+                .Select(i => new { i.OrderId, i.MenuItemId, i.Name, i.Price, i.Quantity, i.SizeName }).ToListAsync();
+
+        decimal NetRevenue(int orderId, decimal total) =>
+            total - refunds.Where(r => r.OrderId == orderId).Sum(r => r.Amount);
 
         var daily = orders
             .GroupBy(o => o.CreatedAt.Date)
             .OrderBy(g => g.Key)
-            .Select(g => new { date = g.Key.ToString("yyyy-MM-dd"), revenue = g.Sum(NetRevenue), orders = g.Count() })
+            .Select(g => new { date = g.Key.ToString("yyyy-MM-dd"), revenue = g.Sum(o => NetRevenue(o.Id, o.Total)), orders = g.Count() })
             .ToList();
 
         // Per-cashier: display names joined from Users.
@@ -541,7 +568,7 @@ public class OrdersController : ControllerBase
             {
                 name = users.TryGetValue(g.Key, out var n) ? n : "Unknown",
                 orders = g.Count(),
-                revenue = g.Sum(NetRevenue)
+                revenue = g.Sum(o => NetRevenue(o.Id, o.Total))
             })
             .OrderByDescending(c => c.revenue)
             .ToList();
@@ -549,8 +576,7 @@ public class OrdersController : ControllerBase
         // Per-category: line items don't carry the category, so join to the
         // current menu items (deleted/renamed items fall into "Other").
         var menuItems = await _db.MenuItems.ToDictionaryAsync(m => m.Id, m => m.Category);
-        var categories = orders
-            .SelectMany(o => o.Items)
+        var categories = items
             .GroupBy(i => menuItems.TryGetValue(i.MenuItemId, out var cat) && !string.IsNullOrWhiteSpace(cat) ? cat : "Other")
             .Select(g => new
             {
@@ -566,9 +592,9 @@ public class OrdersController : ControllerBase
             days,
             totals = new
             {
-                revenue = orders.Sum(NetRevenue),
+                revenue = orders.Sum(o => NetRevenue(o.Id, o.Total)),
                 orders = orders.Count,
-                items = orders.Sum(o => o.Items.Sum(i => i.Quantity))
+                items = items.Sum(i => i.Quantity)
             },
             daily,
             cashiers,
@@ -578,21 +604,39 @@ public class OrdersController : ControllerBase
 
     // GET /api/orders/summary — analytics (admin only). Voided orders are
     // excluded from every figure: revenue means money actually taken.
+    // Used to load EVERY order (plus items and refunds) into memory on every
+    // admin page load; now it's three cheap aggregate queries against the
+    // (ShopId, CreatedAt) index.
     [Authorize(Roles = "admin")]
     [HttpGet("summary")]
     public async Task<ActionResult> GetSummary()
     {
         var today = DateTime.UtcNow.AddHours(2).Date;
-        var orders = await _db.Orders.Include(o => o.Items).Include(o => o.Refunds).ToListAsync();
-        var live = orders.Where(o => o.VoidedAt is null).ToList();
 
-        decimal NetRevenue(Order o) => o.Total - o.Refunds.Sum(r => r.Amount);
+        var allTime = await _db.Orders
+            .Where(o => o.VoidedAt == null)
+            .GroupBy(o => 1)
+            .Select(g => new { count = g.Count(), revenue = g.Sum(o => o.Total) })
+            .FirstOrDefaultAsync();
+        var todayTotals = await _db.Orders
+            .Where(o => o.VoidedAt == null && o.CreatedAt >= today)
+            .GroupBy(o => 1)
+            .Select(g => new { count = g.Count(), revenue = g.Sum(o => o.Total) })
+            .FirstOrDefaultAsync();
+        var voided = await _db.Orders.CountAsync(o => o.VoidedAt != null);
 
-        var revenue = live.Sum(NetRevenue);
-        var todayRevenue = live.Where(o => o.CreatedAt >= today).Sum(NetRevenue);
-
-        var topItems = live
-            .SelectMany(o => o.Items)
+        // Top items: last 30 days of line items, grouped in memory over a
+        // bounded window (the previous version scanned every order ever).
+        var from = today.AddDays(-30);
+        var recent = await _db.Orders
+            .Where(o => o.VoidedAt == null && o.CreatedAt >= from)
+            .Select(o => o.Id)
+            .ToListAsync();
+        var topItems = recent.Count == 0 ? []
+            : await _db.OrderItems.Where(i => recent.Contains(i.OrderId))
+                .Select(i => new { i.Name, i.SizeName, i.Price, i.Quantity })
+                .ToListAsync();
+        var top = topItems
             .GroupBy(i => i.SizeName is null ? i.Name : $"{i.Name} ({i.SizeName})")
             .Select(g => new { Name = g.Key, Quantity = g.Sum(i => i.Quantity), Revenue = g.Sum(i => i.Price * i.Quantity) })
             .OrderByDescending(g => g.Quantity)
@@ -601,12 +645,12 @@ public class OrdersController : ControllerBase
 
         return Ok(new
         {
-            totalOrders = live.Count,
-            totalRevenue = revenue,
-            todayRevenue,
-            todayOrders = live.Count(o => o.CreatedAt >= today),
-            voidedOrders = orders.Count(o => o.VoidedAt is not null),
-            topItems
+            totalOrders = allTime?.count ?? 0,
+            totalRevenue = allTime?.revenue ?? 0,
+            todayRevenue = todayTotals?.revenue ?? 0,
+            todayOrders = todayTotals?.count ?? 0,
+            voidedOrders = voided,
+            topItems = top
         });
     }
 }

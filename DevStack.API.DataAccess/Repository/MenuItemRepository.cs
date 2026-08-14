@@ -18,12 +18,14 @@ public class MenuItemRepository : IMenuItemRepository
     }
 
     public async Task<List<MenuItem>> GetAllAsync() =>
-        await _db.MenuItems.Include(m => m.Sizes)
+        await _db.MenuItems.AsNoTracking()
+            .Include(m => m.Sizes)
             .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
             .OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
 
     public async Task<MenuItem?> GetByIdAsync(int id) =>
-        await _db.MenuItems.Include(m => m.Sizes)
+        await _db.MenuItems.AsNoTracking()
+            .Include(m => m.Sizes)
             .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
             .FirstOrDefaultAsync(m => m.Id == id);
 

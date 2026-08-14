@@ -94,6 +94,41 @@ public class DevStackDataModel : DbContext
             .HasIndex(s => new { s.MenuItemId, s.Name })
             .IsUnique();
 
+        // ── Performance indexes ────────────────────────────────────────────────
+        // Every tenant query goes through the ShopId global filter; the hot
+        // read paths (kitchen queue, cash-up, analytics, summary, admin order
+        // history, auth refresh) were doing full scans before these. Keep the
+        // model config and the migration in sync - a mismatch blocks startup.
+        modelBuilder.Entity<Order>()
+            .HasIndex(o => new { o.ShopId, o.CreatedAt });
+        modelBuilder.Entity<Order>()
+            .HasIndex(o => new { o.ShopId, o.VoidedAt, o.CompletedAt, o.CreatedAt });
+        modelBuilder.Entity<Order>()
+            .HasIndex(o => o.UserId);
+        modelBuilder.Entity<MenuItem>()
+            .HasIndex(m => m.ShopId);
+        modelBuilder.Entity<AppUser>()
+            .HasIndex(u => u.ShopId);
+        modelBuilder.Entity<Shift>()
+            .HasIndex(s => s.ShopId);
+        modelBuilder.Entity<Discount>()
+            .HasIndex(d => d.ShopId);
+        modelBuilder.Entity<Notification>()
+            .HasIndex(n => n.ShopId);
+
+        // Auth hot path: every refresh/login looks a token up by hash and the
+        // table keeps revoked tokens forever - unindexed this is a full scan.
+        modelBuilder.Entity<RefreshToken>()
+            .HasIndex(t => t.TokenHash)
+            .IsUnique();
+        modelBuilder.Entity<RefreshToken>()
+            .HasIndex(t => t.UserId);
+        modelBuilder.Entity<RefreshToken>()
+            .HasIndex(t => t.ReplacedByTokenId);
+
+        modelBuilder.Entity<OrderRefund>()
+            .HasIndex(r => r.OrderId);
+
         modelBuilder.Entity<Notification>()
             .HasIndex(n => n.UserId);
 
@@ -122,6 +157,10 @@ public class DevStackDataModel : DbContext
 
         modelBuilder.Entity<OrderItemModifier>()
             .Property(m => m.PriceDelta)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<OrderRefund>()
+            .Property(r => r.Amount)
             .HasPrecision(18, 2);
 
         modelBuilder.Entity<Shift>()
