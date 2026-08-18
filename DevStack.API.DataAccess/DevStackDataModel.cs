@@ -244,6 +244,10 @@ public class DevStackDataModel : DbContext
             .Property(m => m.CostBasis)
             .HasPrecision(18, 2);
 
+        modelBuilder.Entity<MenuItem>()
+            .HasIndex(m => new { m.ShopId, m.Sku })
+            .IsUnique();
+
         modelBuilder.Entity<Notification>()
             .HasIndex(n => n.UserId);
 

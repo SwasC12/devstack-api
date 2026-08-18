@@ -4,6 +4,9 @@ public class MenuItem
 {
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    // Barcode/SKU for prepacked items (e.g. labelled cookies). Unique per shop;
+    // the POS can scan it to add the item to the cart. Null for counter items.
+    public string? Sku { get; set; }
     public string Category { get; set; } = string.Empty;
     // Referential integrity: the Categories table is the source of truth.
     // `Category` (the name string) is kept in sync as the denormalized label

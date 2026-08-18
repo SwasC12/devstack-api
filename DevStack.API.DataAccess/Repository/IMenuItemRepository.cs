@@ -13,4 +13,5 @@ public interface IMenuItemRepository
     Task<MenuItem> AddAsync(MenuItem item);
     Task<MenuItem?> UpdateAsync(MenuItem item); // null if the id doesn't exist
     Task<bool> DeleteAsync(int id);
+    Task<bool> SkuExistsAsync(string sku, int excludeId); // case-insensitive, per shop (global filter)
 }

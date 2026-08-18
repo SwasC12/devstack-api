@@ -73,6 +73,16 @@ public class MenuItemLogic : IMenuItemLogic
             if (item.Name.Length == 0)
                 throw new ArgumentException("Item name cannot be empty.");
 
+            // SKU/barcode: optional, trimmed, unique per shop (case-insensitive).
+            item.Sku = string.IsNullOrWhiteSpace(item.Sku) ? null : item.Sku.Trim();
+            if (item.Sku is not null)
+            {
+                if (item.Sku.Length > 40)
+                    throw new ArgumentException("SKU is too long (max 40 characters).");
+                if (await _repo.SkuExistsAsync(item.Sku, item.Id))
+                    throw new ArgumentException($"SKU '{item.Sku}' is already used by another item.");
+            }
+
             item.Category = item.Category.Trim();
             if (item.Price < 0) item.Price = 0;
 

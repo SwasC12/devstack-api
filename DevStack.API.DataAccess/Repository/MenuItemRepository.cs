@@ -57,6 +57,7 @@ public class MenuItemRepository : IMenuItemRepository
         existing.ImagePublicId = item.ImagePublicId;
         existing.IsAvailable = item.IsAvailable;
         existing.StockQuantity = item.StockQuantity;
+        existing.Sku = string.IsNullOrWhiteSpace(item.Sku) ? null : item.Sku.Trim();
         existing.CostBasis = Math.Max(0, item.CostBasis);
 
         // Reconcile recipe lines: keep matching ids (update cost/qty), add new,
@@ -157,4 +158,7 @@ public class MenuItemRepository : IMenuItemRepository
         await _db.SaveChangesAsync();
         return true;
     }
+
+    public async Task<bool> SkuExistsAsync(string sku, int excludeId) =>
+        await _db.MenuItems.AnyAsync(m => m.Id != excludeId && m.Sku != null && m.Sku.ToLower() == sku.ToLower());
 }
