@@ -859,8 +859,6 @@ public class OrdersController : ControllerBase
         foreach (var o in orders)
         {
             events.Add((o.CreatedAt, "sale", $"#{o.Id}", $"{(o.CustomerName is null ? "Walk-in" : o.CustomerName)} · {o.PaymentMethod}", o.Total));
-            if (o.TipAmount > 0) events.Add((o.CreatedAt, "tip", $"#{o.Id}", "Customer tip", o.TipAmount));
-            if (o.ServiceChargeAmount > 0) events.Add((o.CreatedAt, "service_charge", $"#{o.Id}", "Service charge", o.ServiceChargeAmount));
         }
         foreach (var v in await _db.Orders.Where(o => o.VoidedAt != null
                 && (fromD == DateTime.MinValue || o.CreatedAt >= fromD) && (toD == DateTime.MaxValue || o.CreatedAt < toD))
