@@ -35,23 +35,12 @@ public class DiscountsController : ControllerBase
     public async Task<ActionResult> GetAll()
     {
         var now = DateTime.UtcNow.AddHours(2);
-        var discounts = await _db.Discounts
+        // Load the discounts ONCE (read-only) and compute IsLive in memory.
+        // Previously this hit the Discounts table twice - a projected list and a
+        // second full-entity read just for IsLiveAt.
+        var discounts = await _db.Discounts.AsNoTracking()
             .OrderBy(d => d.Name)
-            .Select(d => new
-            {
-                d.Id,
-                d.Name,
-                d.Type,
-                d.Value,
-                d.IsActive,
-                d.DayOfWeek,
-                d.StartTime,
-                d.EndTime
-            })
             .ToListAsync();
-
-        // IsLiveAt needs the full entity; evaluate per row (cheap, small list).
-        var live = await _db.Discounts.ToDictionaryAsync(d => d.Id, d => d.IsLiveAt(now));
 
         return Ok(discounts.Select(d => new
         {
@@ -63,7 +52,7 @@ public class DiscountsController : ControllerBase
             d.DayOfWeek,
             d.StartTime,
             d.EndTime,
-            IsLive = live.TryGetValue(d.Id, out var l) && l
+            IsLive = d.IsLiveAt(now)
         }));
     }
 

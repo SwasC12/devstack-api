@@ -145,9 +145,14 @@ public class AppController : ControllerBase
     [HttpGet("version")]
     public async Task<ActionResult> GetVersion()
     {
+        // Project to metadata in the QUERY so the multi-MB ApkData blob is
+        // never read from the DB. This endpoint is polled on POS startup and on
+        // every app foreground - loading the whole APK each time was a big,
+        // needless transfer. (Download() below still reads ApkData, as it must.)
         var release = await _db.AppReleases
             .Where(r => r.IsCurrent)
             .OrderByDescending(r => r.CreatedAtUtc)
+            .Select(r => new { r.Version, r.ReleaseNotes, r.IsRequired, r.SizeBytes })
             .FirstOrDefaultAsync();
         if (release is null) return Ok(new { available = false });
 

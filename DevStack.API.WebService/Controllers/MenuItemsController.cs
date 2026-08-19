@@ -3,6 +3,7 @@ using DevStack.API.Models;
 using DevStack.API.PlatformLogic.MenuItemLogic;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace DevStack.API.WebService.Controllers;
@@ -43,6 +44,21 @@ public class MenuItemsController : ControllerBase
     {
         var result = await _logic.GetItemsAsync();
         return result.IsSuccess ? Ok(result.Data) : StatusCode(500, result.Error);
+    }
+
+    // GET api/menuitems/stock — lightweight cross-till stock snapshot.
+    // Returns ONLY id + on-hand + availability (no sizes/modifiers/recipe/
+    // images), so a second till can keep its stock counts fresh with a tiny,
+    // cheap poll instead of re-downloading the whole menu. The shop query
+    // filter on _db.MenuItems scopes this to the caller's shop automatically.
+    [HttpGet("stock")]
+    public async Task<ActionResult<List<StockDto>>> GetStock()
+    {
+        var stock = await _db.MenuItems.AsNoTracking()
+            .OrderBy(m => m.Id)
+            .Select(m => new StockDto(m.Id, m.StockQuantity, m.IsAvailable))
+            .ToListAsync();
+        return Ok(stock);
     }
 
     // GET api/menuitems/5
@@ -87,3 +103,7 @@ public class MenuItemsController : ControllerBase
         return NoContent();
     }
 }
+
+// Tiny projection for the cross-till stock poll - deliberately NOT the full
+// MenuItem graph.
+public record StockDto(int Id, int StockQuantity, bool IsAvailable);

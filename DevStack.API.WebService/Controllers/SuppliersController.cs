@@ -32,11 +32,22 @@ public class SuppliersController : ControllerBase
     [HttpGet]
     public async Task<ActionResult> GetSuppliers()
     {
-        var suppliers = await _db.Suppliers.OrderBy(s => s.Name).ToListAsync();
+        var suppliers = await _db.Suppliers.OrderBy(s => s.Name).AsNoTracking().ToListAsync();
+
+        // One grouped query for open-order counts instead of a blocking Count
+        // per supplier (the old N+1).
+        var ids = suppliers.Select(s => s.Id).ToList();
+        var openBySupplier = (await _db.PurchaseOrders.AsNoTracking()
+            .Where(p => ids.Contains(p.SupplierId) && p.Status != "received")
+            .GroupBy(p => p.SupplierId)
+            .Select(g => new { SupplierId = g.Key, Open = g.Count() })
+            .ToListAsync())
+            .ToDictionary(x => x.SupplierId, x => x.Open);
+
         return Ok(suppliers.Select(s => new
         {
             s.Id, s.Name, s.Phone, s.Email, s.CreatedAt,
-            OpenOrders = _db.PurchaseOrders.Count(p => p.SupplierId == s.Id && p.Status != "received")
+            OpenOrders = openBySupplier.TryGetValue(s.Id, out var n) ? n : 0
         }));
     }
 

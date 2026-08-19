@@ -17,18 +17,28 @@ public class MenuItemRepository : IMenuItemRepository
         _db = db;
     }
 
+    // AsSplitQuery: three independent collection Includes (Sizes,
+    // ModifierGroups->Modifiers, RecipeLines) in ONE query make EF Core emit a
+    // LEFT JOIN across all of them - a cartesian explosion where the row count
+    // is items x sizes x modifiers x recipeLines and every row re-sends the
+    // parent columns (including the long ImageUrl). Over a remote DB that is
+    // the "extremely slow" menu load. Split queries fetch each collection in
+    // its own round trip, so the payload is linear in the data, not the product.
     public async Task<List<MenuItem>> GetAllAsync() =>
         await _db.MenuItems.AsNoTracking()
             .Include(m => m.Sizes)
             .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
             .Include(m => m.RecipeLines)
-            .OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
+            .OrderBy(i => i.Category).ThenBy(i => i.Name)
+            .AsSplitQuery()
+            .ToListAsync();
 
     public async Task<MenuItem?> GetByIdAsync(int id) =>
         await _db.MenuItems.AsNoTracking()
             .Include(m => m.Sizes)
             .Include(m => m.ModifierGroups).ThenInclude(g => g.Modifiers)
             .Include(m => m.RecipeLines)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(m => m.Id == id);
 
     public async Task<MenuItem> AddAsync(MenuItem item)

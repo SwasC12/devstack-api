@@ -37,12 +37,34 @@ public class CustomersController : ControllerBase
             var term = q.Trim();
             query = query.Where(c => c.Name.Contains(term) || (c.Phone != null && c.Phone.Contains(term)));
         }
-        var customers = await query.OrderBy(c => c.Name).ToListAsync();
-        return Ok(customers.Select(c => new
+        var customers = await query.OrderBy(c => c.Name).AsNoTracking().ToListAsync();
+
+        // Aggregate order stats in ONE grouped query instead of 2 blocking
+        // queries per customer (the old N+1: Count + Sum inside the in-memory
+        // Select). OrderCount counts all orders; OrderTotal excludes voided -
+        // same semantics as before.
+        var ids = customers.Select(c => c.Id).ToList();
+        var agg = (await _db.Orders.AsNoTracking()
+            .Where(o => o.AccountCustomerId != null && ids.Contains(o.AccountCustomerId.Value))
+            .GroupBy(o => o.AccountCustomerId!.Value)
+            .Select(g => new
+            {
+                CustomerId = g.Key,
+                OrderCount = g.Count(),
+                OrderTotal = g.Where(o => o.VoidedAt == null).Sum(o => (decimal?)o.Total) ?? 0
+            })
+            .ToListAsync())
+            .ToDictionary(a => a.CustomerId);
+
+        return Ok(customers.Select(c =>
         {
-            c.Id, c.Name, c.Phone, c.Email, c.CreditLimit, c.Balance, c.Notes, c.CreatedAt,
-            OrderCount = _db.Orders.Count(o => o.AccountCustomerId == c.Id),
-            OrderTotal = _db.Orders.Where(o => o.AccountCustomerId == c.Id && o.VoidedAt == null).Sum(o => (decimal?)o.Total) ?? 0
+            agg.TryGetValue(c.Id, out var a);
+            return new
+            {
+                c.Id, c.Name, c.Phone, c.Email, c.CreditLimit, c.Balance, c.Notes, c.CreatedAt,
+                OrderCount = a?.OrderCount ?? 0,
+                OrderTotal = a?.OrderTotal ?? 0m
+            };
         }));
     }
 

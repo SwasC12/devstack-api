@@ -343,12 +343,18 @@ public class OrdersController : ControllerBase
             query = query.Where(o => o.CreatedAt < toDate.Date.AddDays(1));
 
         var total = await query.CountAsync();
+        // AsNoTracking (read-only) + AsSplitQuery: three sibling collection
+        // Includes (Items->Modifiers, Refunds, Payments) in one query is a
+        // cartesian explosion (rows = orders x items x refunds x payments).
+        // Split queries fetch each collection separately - linear, not product.
         var orders = await query
+            .AsNoTracking()
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
             .Include(o => o.Refunds)
             .Include(o => o.Payments)
             .OrderByDescending(o => o.CreatedAt)
             .Skip(offset).Take(limit)
+            .AsSplitQuery()
             .ToListAsync();
 
         var userIds = orders.Where(o => o.UserId is not null).Select(o => o.UserId!.Value).Distinct().ToList();
@@ -487,8 +493,10 @@ public class OrdersController : ControllerBase
     public async Task<ActionResult<Order>> GetOrder(int id)
     {
         var order = await _db.Orders
+            .AsNoTracking()
             .Include(o => o.Items).ThenInclude(i => i.Modifiers)
             .Include(o => o.Refunds)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(o => o.Id == id);
         return order is null ? NotFound() : Ok(order);
     }
@@ -645,9 +653,11 @@ public class OrdersController : ControllerBase
         var dayEnd = dayStart.AddDays(1);
 
         var orders = await _db.Orders
+            .AsNoTracking()
             .Where(o => o.VoidedAt == null && o.CreatedAt >= dayStart && o.CreatedAt < dayEnd)
             .Include(o => o.Refunds)
             .Include(o => o.Payments)
+            .AsSplitQuery()
             .ToListAsync();
 
         // Money in per method: prefer the split-payment rows; legacy orders
