@@ -39,11 +39,27 @@ public class MenuItemsController : ControllerBase
     }
 
     // GET api/menuitems
+    // Supports conditional GET: we hash the serialized menu into an ETag. When
+    // the client sends a matching If-None-Match we return 304 (no body), so a
+    // cold reopen with an unchanged menu costs a tiny round-trip instead of
+    // re-downloading + re-parsing + re-caching the whole menu. The hash is of
+    // this shop's data, so the ETag is naturally per-shop.
     [HttpGet]
     public async Task<ActionResult<List<MenuItem>>> GetAll()
     {
         var result = await _logic.GetItemsAsync();
-        return result.IsSuccess ? Ok(result.Data) : StatusCode(500, result.Error);
+        if (!result.IsSuccess) return StatusCode(500, result.Error);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(result.Data);
+        var hash = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(json));
+        var etag = "\"" + Convert.ToHexString(hash) + "\"";
+
+        if (Request.Headers.IfNoneMatch.ToString() == etag)
+            return StatusCode(StatusCodes.Status304NotModified);
+
+        Response.Headers.ETag = etag;
+        // Return the already-serialized JSON so we don't serialize twice.
+        return Content(json, "application/json");
     }
 
     // GET api/menuitems/stock — lightweight cross-till stock snapshot.
