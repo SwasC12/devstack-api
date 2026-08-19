@@ -8,6 +8,13 @@ on:
     branches: [main]
   workflow_dispatch: # lets you trigger a deploy manually from the Actions tab
 
+# Serialize deploys: two pushes in quick succession must NOT FTP-race (whoever
+# finishes last would win unpredictably, which once left a broken build live).
+# Queue runs (don't cancel mid-FTP) so the newest push always deploys last.
+concurrency:
+  group: monsterasp-deploy
+  cancel-in-progress: false
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
