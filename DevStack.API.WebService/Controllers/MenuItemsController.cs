@@ -50,16 +50,20 @@ public class MenuItemsController : ControllerBase
         var result = await _logic.GetItemsAsync();
         if (!result.IsSuccess) return StatusCode(500, result.Error);
 
-        var json = System.Text.Json.JsonSerializer.Serialize(result.Data);
-        var hash = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(json));
+        // Fingerprint for change-detection only: the casing here is irrelevant
+        // (it's just hashed), so a default serialization is fine. The RESPONSE
+        // body must go through Ok(...) so MVC serializes it with the app's
+        // configured (camelCase) options - hand-serializing here produced
+        // PascalCase and broke every client field.
+        var fingerprint = System.Text.Json.JsonSerializer.Serialize(result.Data);
+        var hash = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(fingerprint));
         var etag = "\"" + Convert.ToHexString(hash) + "\"";
 
         if (Request.Headers.IfNoneMatch.ToString() == etag)
             return StatusCode(StatusCodes.Status304NotModified);
 
         Response.Headers.ETag = etag;
-        // Return the already-serialized JSON so we don't serialize twice.
-        return Content(json, "application/json");
+        return Ok(result.Data);
     }
 
     // GET api/menuitems/stock — lightweight cross-till stock snapshot.
