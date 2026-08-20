@@ -66,16 +66,19 @@ public class NotificationsController : ControllerBase
         _db.Notifications.AddRange(rows);
         await _db.SaveChangesAsync();
 
-        // Fire pushes (best-effort): one per registered device. Dead tokens
-        // are deleted; a failed send never fails the broadcast.
+        // Fire pushes (best-effort): one per registered device. SendAsync
+        // returns true (delivered), false (dead token → delete it), or null
+        // (Firebase not configured on the server → skipped, token kept).
         var targetIds = targets.Select(t => t.Id).ToList();
         var tokens = await _db.PushTokens.Where(t => targetIds.Contains(t.UserId)).ToListAsync();
-        var failed = 0;
+        var sent = 0; var failed = 0; var skipped = 0;
         foreach (var token in tokens)
         {
             var row = rows.FirstOrDefault(r => r.UserId == token.UserId);
             var ok = await _push.SendAsync(token, title, body, type, row?.Id);
-            if (ok == false) { _db.PushTokens.Remove(token); failed++; }
+            if (ok == true) sent++;
+            else if (ok == false) { _db.PushTokens.Remove(token); failed++; }
+            else skipped++;
         }
 
         // Superadmin audit trail: the broadcast itself + any dead/undelivered
@@ -99,7 +102,18 @@ public class NotificationsController : ControllerBase
         }
         await _db.SaveChangesAsync();
 
-        return Ok(new { delivered = rows.Count, pushed = tokens.Count - failed });
+        // pushConfigured=false → the server has no Firebase service account, so
+        // no FCM was actually sent (in-app notifications still delivered). The
+        // UI surfaces this so "0 devices" isn't mistaken for a client problem.
+        return Ok(new
+        {
+            delivered = rows.Count,
+            devices = tokens.Count,
+            pushed = sent,
+            skipped,
+            failed,
+            pushConfigured = PushService.IsReady
+        });
     }
 
     public record EmailOwnerRequest(string Subject, string Body);
