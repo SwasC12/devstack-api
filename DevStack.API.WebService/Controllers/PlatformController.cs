@@ -16,11 +16,13 @@ public class PlatformController : ControllerBase
 {
     private readonly DevStackDataModel _db;
     private readonly IConfiguration _config;
+    private readonly IPushService _push;
 
-    public PlatformController(DevStackDataModel db, IConfiguration config)
+    public PlatformController(DevStackDataModel db, IConfiguration config, IPushService push)
     {
         _db = db;
         _config = config;
+        _push = push;
     }
 
     // GET api/platform/overview - counters + the last 10 audit events.
@@ -96,7 +98,9 @@ public class PlatformController : ControllerBase
         {
             api = true,
             database = await _db.Database.CanConnectAsync(),
-            push = PushService.IsReady,
+            // Initialise Firebase on demand so the dot reflects the real config
+            // state (green) immediately, not only after the first push send.
+            push = _push.EnsureConfigured(),
             storage
         });
     }

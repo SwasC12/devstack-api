@@ -20,6 +20,11 @@ public interface IPushService
     // Data-only message (no visible notification): used for silent triggers
     // like "new order on the kitchen display". Same return semantics.
     Task<bool?> SendDataAsync(PushToken token, string type, string? payload = null);
+
+    // Attempt (once) to initialise Firebase and report whether it's configured.
+    // The health check calls this so the "Push" dot reflects the real config
+    // state without waiting for the first push send to trigger lazy init.
+    bool EnsureConfigured();
 }
 
 public class PushService : IPushService
@@ -112,6 +117,8 @@ public class PushService : IPushService
             return true;
         }
     }
+
+    public bool EnsureConfigured() => EnsureInitialized();
 
     private bool EnsureInitialized()
     {
