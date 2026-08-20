@@ -26,7 +26,7 @@ public class ExpensesController : ControllerBase
 
     public record ExpenseWrite(string Category, decimal Amount, string? Note);
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet]
     public async Task<ActionResult> GetAll([FromQuery] string? from = null, [FromQuery] string? to = null)
     {
@@ -49,7 +49,7 @@ public class ExpensesController : ControllerBase
         });
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost]
     public async Task<ActionResult> Create(ExpenseWrite request)
     {
@@ -74,7 +74,7 @@ public class ExpensesController : ControllerBase
         return Ok(expense);
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {

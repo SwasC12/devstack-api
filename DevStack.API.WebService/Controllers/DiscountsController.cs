@@ -57,7 +57,7 @@ public class DiscountsController : ControllerBase
     }
 
     // PUT api/discounts — the single write path: Id == 0 creates, else edits.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPut]
     public async Task<ActionResult<Discount>> Write(Discount discount)
     {
@@ -99,7 +99,7 @@ public class DiscountsController : ControllerBase
     }
 
     // DELETE api/discounts/5 — admin.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {

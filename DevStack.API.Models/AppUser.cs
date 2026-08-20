@@ -7,7 +7,7 @@ public class AppUser
     public string PasswordHash { get; set; } = string.Empty;
     public string? PinHash { get; set; } // hashed staff PIN for the fast cashier sign-in
     public string DisplayName { get; set; } = string.Empty;
-    public string Role { get; set; } = "admin"; // superadmin | admin | cashier
+    public string Role { get; set; } = "admin"; // superadmin | admin | manager | cashier
     public int? ShopId { get; set; } // null for superadmins; shop staff belong to one shop
 
     // Hourly wage in ZAR - feeds the timesheet payroll report (null = not set).

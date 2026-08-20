@@ -313,12 +313,13 @@ public class OrdersController : ControllerBase
 
         _db.Orders.Add(order);
 
-        // Low-stock alerts: one in-app notification per shop admin (no FCM
-        // push - the bell in the admin UI is the delivery).
+        // Low-stock alerts: one in-app notification per shop admin/manager (no
+        // FCM push - the bell in the admin UI is the delivery). Managers run
+        // inventory too, so they get these alerts alongside admins.
         List<Notification>? alertRows = null;
         if (lowStockAlerts.Count > 0)
         {
-            var admins = await _db.Users.Where(u => u.Role == "admin" && u.ShopId == order.ShopId).ToListAsync();
+            var admins = await _db.Users.Where(u => (u.Role == "admin" || u.Role == "manager") && u.ShopId == order.ShopId).ToListAsync();
             if (admins.Count > 0)
             {
                 var alertNow = DateTime.UtcNow;
@@ -345,7 +346,7 @@ public class OrdersController : ControllerBase
     // the total row count in X-Total-Count so the UI can show "load more".
     // The whole history used to be loaded in one shot — that's the query that
     // got slower every single day.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet]
     public async Task<ActionResult> GetOrders([FromQuery] string? from = null, [FromQuery] string? to = null, [FromQuery] int limit = 200, [FromQuery] int offset = 0)
     {
@@ -415,7 +416,7 @@ public class OrdersController : ControllerBase
 
     // POST /api/orders/{id}/void — admin only. The one-way door, now with a
     // key: a voided order is excluded from revenue and its stock is restored.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost("{id:int}/void")]
     public async Task<IActionResult> VoidOrder(int id, VoidOrderRequest request)
     {
@@ -461,7 +462,7 @@ public class OrdersController : ControllerBase
     // items were already sold/consumed (void is the stock-return path for
     // unfulfilled orders). Cannot exceed what is still refundable on the
     // order (total minus previous refunds); voided orders can't be refunded.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost("{id:int}/refund")]
     public async Task<IActionResult> RefundOrder(int id, RefundOrderRequest request)
     {
@@ -659,7 +660,7 @@ public class OrdersController : ControllerBase
     // totals per payment method (split payments included), tips, expenses,
     // discounts, refunds and per-cashier breakdown for a day (defaults to
     // today, SAST). Voided orders excluded everywhere.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet("cashup")]
     public async Task<ActionResult> GetCashup([FromQuery] string? date = null)
     {
@@ -765,7 +766,7 @@ public class OrdersController : ControllerBase
     // excluded; everything scoped to the current shop by the global filter.
     // Lightweight: only the columns needed for the report are pulled (no
     // item/modifier/refund graph), and the window is bounded by `days`.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet("analytics")]
     public async Task<ActionResult> GetAnalytics([FromQuery] int days = 14)
     {
@@ -854,7 +855,7 @@ public class OrdersController : ControllerBase
     // GET /api/orders/journal?from&to - admin only. The transaction journal:
     // every money event in chronological order with a running cash balance.
     // Sales/tips/service charges add; voids, refunds and expenses subtract.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet("journal")]
     public async Task<ActionResult> GetJournal([FromQuery] string? from = null, [FromQuery] string? to = null)
     {
@@ -911,7 +912,7 @@ public class OrdersController : ControllerBase
     // Used to load EVERY order (plus items and refunds) into memory on every
     // admin page load; now it's three cheap aggregate queries against the
     // (ShopId, CreatedAt) index.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet("summary")]
     public async Task<ActionResult> GetSummary()
     {

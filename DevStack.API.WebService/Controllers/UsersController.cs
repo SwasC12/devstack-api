@@ -51,7 +51,7 @@ public class UsersController : ControllerBase
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
             PinHash = string.IsNullOrEmpty(request.Pin) ? null : BCrypt.Net.BCrypt.HashPassword(request.Pin),
             DisplayName = request.DisplayName,
-            Role = request.Role is "cashier" or "admin" ? request.Role : "cashier",
+            Role = request.Role is "cashier" or "manager" or "admin" ? request.Role : "cashier",
             ShopId = _currentShop.ShopId,
             WageRate = request.WageRate is > 0 ? request.WageRate : null
         };
@@ -74,7 +74,7 @@ public class UsersController : ControllerBase
         if (string.IsNullOrEmpty(name)) return BadRequest(new { error = "Display name cannot be empty." });
 
         user.DisplayName = name;
-        user.Role = request.Role is "cashier" or "admin" ? request.Role : user.Role;
+        user.Role = request.Role is "cashier" or "manager" or "admin" ? request.Role : user.Role;
         user.WageRate = request.WageRate is > 0 ? request.WageRate : null;
         await AuditLog.Write(_db, _currentShop.ShopId, id, "user_update", $"'{user.Username}' → '{user.DisplayName}' ({user.Role})");
         await _db.SaveChangesAsync();

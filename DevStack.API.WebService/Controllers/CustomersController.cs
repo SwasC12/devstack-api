@@ -27,7 +27,7 @@ public class CustomersController : ControllerBase
     public record CustomerWrite(string Name, string? Phone, string? Email, decimal CreditLimit, string? Notes);
     public record SettleRequest(decimal Amount, string Method);
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet]
     public async Task<ActionResult> GetAll([FromQuery] string? q = null)
     {
@@ -68,7 +68,7 @@ public class CustomersController : ControllerBase
         }));
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost]
     public async Task<ActionResult> Create(CustomerWrite request)
     {
@@ -92,7 +92,7 @@ public class CustomersController : ControllerBase
         return Ok(customer);
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPut("{id:int}")]
     public async Task<ActionResult> Update(int id, CustomerWrite request)
     {
@@ -110,7 +110,7 @@ public class CustomersController : ControllerBase
         return Ok(customer);
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
@@ -126,7 +126,7 @@ public class CustomersController : ControllerBase
     }
 
     // POST /api/customers/{id}/settle - reduce the balance (cash/card/account).
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost("{id:int}/settle")]
     public async Task<IActionResult> Settle(int id, SettleRequest request)
     {

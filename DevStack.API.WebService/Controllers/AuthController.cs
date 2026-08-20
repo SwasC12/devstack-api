@@ -192,9 +192,9 @@ public class AuthController : ControllerBase
         return Ok(BuildLoginResponse(access, user, shop, rawRefresh));
     }
 
-    // POST api/auth/verify-pin - any signed-in user: is this the PIN of one
-    // of the shop's admins? Used for manager-approval actions (voiding an
-    // order). Same failed-attempt lockout as pin-login, keyed per PIN.
+    // POST api/auth/verify-pin - any signed-in user: is this the PIN of one of
+    // the shop's admins OR managers? Used for manager-approval actions (voiding
+    // /refunding an order). Same failed-attempt lockout as pin-login, per PIN.
     [HttpPost("verify-pin")]
     public async Task<ActionResult> VerifyPin(VerifyPinRequest request)
     {
@@ -206,11 +206,11 @@ public class AuthController : ControllerBase
         var shopId = int.Parse(User.FindFirstValue("shopId") ?? "-1");
         if (shopId <= 0) return Ok(new { valid = false }); // superadmins have no shop scope
 
-        var admins = await _db.Users
-            .Where(u => u.ShopId == shopId && u.Role == "admin" && u.PinHash != null)
+        var approvers = await _db.Users
+            .Where(u => u.ShopId == shopId && (u.Role == "admin" || u.Role == "manager") && u.PinHash != null)
             .Select(u => u.PinHash!)
             .ToListAsync();
-        var valid = admins.Any(hash => BCrypt.Net.BCrypt.Verify(pin, hash));
+        var valid = approvers.Any(hash => BCrypt.Net.BCrypt.Verify(pin, hash));
 
         if (valid) _throttle.Reset(key); else _throttle.RecordFailure(key);
         return Ok(new { valid });

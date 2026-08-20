@@ -28,7 +28,7 @@ public class SuppliersController : ControllerBase
 
     public record SupplierWrite(string Name, string? Phone, string? Email);
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet]
     public async Task<ActionResult> GetSuppliers()
     {
@@ -51,7 +51,7 @@ public class SuppliersController : ControllerBase
         }));
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost]
     public async Task<ActionResult> CreateSupplier(SupplierWrite request)
     {
@@ -72,7 +72,7 @@ public class SuppliersController : ControllerBase
         return Ok(supplier);
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPut("{id:int}")]
     public async Task<ActionResult> UpdateSupplier(int id, SupplierWrite request)
     {
@@ -86,7 +86,7 @@ public class SuppliersController : ControllerBase
         return Ok(supplier);
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> DeleteSupplier(int id)
     {
@@ -105,7 +105,7 @@ public class SuppliersController : ControllerBase
     public record PoLineWrite(int MenuItemId, int Quantity, decimal UnitCost);
     public record PoWrite(int SupplierId, decimal FreightCost, decimal DutyCost, string? Notes, List<PoLineWrite> Lines);
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpGet("orders")]
     public async Task<ActionResult> GetOrders()
     {
@@ -133,7 +133,7 @@ public class SuppliersController : ControllerBase
         }));
     }
 
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost("orders")]
     public async Task<ActionResult> CreateOrder(PoWrite request)
     {
@@ -173,7 +173,7 @@ public class SuppliersController : ControllerBase
     // POST /api/suppliers/orders/{id}/receive - partial receiving. Each line
     // receives `quantity` units: stock goes up, the received cost (unit + a
     // share of freight/duty, i.e. landed cost) rolls into the item's CostBasis.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPost("orders/{id:int}/receive")]
     public async Task<ActionResult> Receive(int id, [FromBody] List<ReceiveLineRequest> received)
     {

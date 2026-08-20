@@ -16,7 +16,7 @@ namespace DevStack.API.WebService.Controllers;
 //   DELETE api/categories/5     → Delete (blocked while items still use it)
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "admin")]
+[Authorize(Roles = "admin,manager")]
 public class CategoriesController : ControllerBase
 {
     private readonly ICategoryLogic _logic;

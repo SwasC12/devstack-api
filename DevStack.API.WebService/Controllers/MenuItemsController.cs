@@ -92,7 +92,7 @@ public class MenuItemsController : ControllerBase
     }
 
     // PUT api/menuitems  — the single "write" call: create or edit.
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpPut]
     public async Task<ActionResult<MenuItem>> Write(MenuItem item)
     {
@@ -111,7 +111,7 @@ public class MenuItemsController : ControllerBase
     }
 
     // DELETE api/menuitems/5
-    [Authorize(Roles = "admin")]
+    [Authorize(Roles = "admin,manager")]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
