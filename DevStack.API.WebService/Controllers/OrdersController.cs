@@ -231,6 +231,22 @@ public class OrdersController : ControllerBase
         }
 
         var tenderTotal = tenders.Sum(t => t.Amount);
+
+        // Single non-cash tender (a plain card or account sale, no cash): the
+        // SERVER is the source of truth on price, so charge exactly what is due.
+        // The client sends the amount from its own displayed total, which can be
+        // a few cents — or a stale-cached price — above the server's recomputed
+        // grand total; that used to fail checkout with "Non-cash payments exceed
+        // the R… due" even on a plain exact card sale. Clamp the tender DOWN to
+        // the grand total so the card is charged precisely what's owed. (We only
+        // clamp down: a tender BELOW the total still correctly fails as
+        // "doesn't cover", which forces a menu refresh if a price went up.)
+        if (tenders.Count == 1 && tenders[0].Method != "cash" && tenderTotal > grandTotal)
+        {
+            tenders[0] = tenders[0] with { Amount = grandTotal };
+            tenderTotal = grandTotal;
+        }
+
         var isAccount = tenders.Any(t => t.Method == "account");
 
         // House account: the full amount goes on the customer's tab. Credit

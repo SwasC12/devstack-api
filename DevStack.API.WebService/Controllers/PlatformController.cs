@@ -100,4 +100,42 @@ public class PlatformController : ControllerBase
             storage
         });
     }
+
+    // GET api/platform/revenue-series?days=30[&shopId=] — daily revenue + order
+    // count across ALL shops (or one shop when shopId is given), for the trend
+    // chart. Cross-shop, so IgnoreQueryFilters; excludes voided orders. Days
+    // with no sales are filled with zeros so the series is continuous.
+    [HttpGet("revenue-series")]
+    public async Task<ActionResult> GetRevenueSeries([FromQuery] int days = 30, [FromQuery] int? shopId = null)
+    {
+        days = Math.Clamp(days, 1, 365);
+        var today = DateTime.UtcNow.AddHours(2).Date; // SAST, matches stored CreatedAt
+        var start = today.AddDays(-(days - 1));
+
+        var query = _db.Orders.IgnoreQueryFilters()
+            .Where(o => o.VoidedAt == null && o.CreatedAt >= start && o.CreatedAt < today.AddDays(1));
+        if (shopId is not null) query = query.Where(o => o.ShopId == shopId);
+
+        var grouped = await query
+            .GroupBy(o => o.CreatedAt.Date)
+            .Select(g => new { Date = g.Key, Revenue = g.Sum(o => o.Total), Orders = g.Count() })
+            .ToListAsync();
+        var byDate = grouped.ToDictionary(g => g.Date);
+
+        var series = new List<object>(days);
+        decimal totalRevenue = 0m;
+        int totalOrders = 0;
+        for (var i = 0; i < days; i++)
+        {
+            var d = start.AddDays(i);
+            byDate.TryGetValue(d, out var row);
+            var rev = row?.Revenue ?? 0m;
+            var ord = row?.Orders ?? 0;
+            totalRevenue += rev;
+            totalOrders += ord;
+            series.Add(new { date = d.ToString("yyyy-MM-dd"), revenue = rev, orders = ord });
+        }
+
+        return Ok(new { days, totalRevenue, totalOrders, series });
+    }
 }

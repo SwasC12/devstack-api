@@ -38,6 +38,14 @@ public class ShopsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult> GetAll()
     {
+        // The single "current" published version, so the caller can flag shops
+        // running something older (an at-risk signal on the platform dashboard).
+        var currentVersion = await _db.AppReleases
+            .Where(r => r.IsCurrent)
+            .OrderByDescending(r => r.CreatedAtUtc)
+            .Select(r => r.Version)
+            .FirstOrDefaultAsync();
+
         var shops = await _db.Shops
             .OrderBy(s => s.Name)
             .Select(s => new
@@ -51,14 +59,84 @@ public class ShopsController : ControllerBase
                 s.OwnerPhone,
                 UserCount = _db.Users.Count(u => u.ShopId == s.Id),
                 OrderCount = _db.Orders.IgnoreQueryFilters().Count(o => o.ShopId == s.Id),
+                // Lifetime revenue (excludes voided) — feeds the richer table.
+                Revenue = _db.Orders.IgnoreQueryFilters()
+                    .Where(o => o.ShopId == s.Id && o.VoidedAt == null)
+                    .Sum(o => (decimal?)o.Total) ?? 0m,
                 LastOrderAt = _db.Orders.IgnoreQueryFilters()
                     .Where(o => o.ShopId == s.Id)
                     .OrderByDescending(o => o.CreatedAt)
                     .Select(o => (DateTime?)o.CreatedAt)
+                    .FirstOrDefault(),
+                // Installed app version + last check-in (from AppCheckins).
+                AppVersion = _db.AppCheckins
+                    .Where(c => c.ShopId == s.Id)
+                    .OrderByDescending(c => c.LastSeenAtUtc)
+                    .Select(c => c.Version)
+                    .FirstOrDefault(),
+                LastSeenAt = _db.AppCheckins
+                    .Where(c => c.ShopId == s.Id)
+                    .OrderByDescending(c => c.LastSeenAtUtc)
+                    .Select(c => (DateTime?)c.LastSeenAtUtc)
                     .FirstOrDefault()
             })
             .ToListAsync();
-        return Ok(shops);
+        return Ok(new { currentVersion, shops });
+    }
+
+    // GET api/shops/{id}/detail — superadmin: everything for one shop's drawer:
+    // headline stats, its staff, and its most recent orders. All cross-shop
+    // reads use IgnoreQueryFilters (superadmin has no shop scope). Reads only.
+    [Authorize(Roles = "superadmin")]
+    [HttpGet("{id:int}/detail")]
+    public async Task<ActionResult> Detail(int id)
+    {
+        var shop = await _db.Shops.AsNoTracking().FirstOrDefaultAsync(s => s.Id == id);
+        if (shop is null) return NotFound();
+
+        var todayStart = DateTime.UtcNow.AddHours(2).Date; // SAST, matches overview
+        var orders = _db.Orders.IgnoreQueryFilters().Where(o => o.ShopId == id);
+
+        var orderCount = await orders.CountAsync();
+        var revenue = (await orders.Where(o => o.VoidedAt == null).SumAsync(o => (decimal?)o.Total)) ?? 0m;
+        var ordersToday = await orders.CountAsync(o => o.VoidedAt == null && o.CreatedAt >= todayStart);
+        var revenueToday = (await orders.Where(o => o.VoidedAt == null && o.CreatedAt >= todayStart).SumAsync(o => (decimal?)o.Total)) ?? 0m;
+
+        var users = await _db.Users.AsNoTracking()
+            .Where(u => u.ShopId == id)
+            .OrderBy(u => u.Role).ThenBy(u => u.Username)
+            .Select(u => new { u.Id, u.Username, u.DisplayName, u.Role, HasPin = u.PinHash != null })
+            .ToListAsync();
+
+        var recentOrders = await orders.AsNoTracking()
+            .OrderByDescending(o => o.CreatedAt)
+            .Take(10)
+            .Select(o => new { o.Id, o.CreatedAt, o.Total, o.PaymentMethod, IsVoided = o.VoidedAt != null })
+            .ToListAsync();
+
+        var checkin = await _db.AppCheckins.AsNoTracking()
+            .Where(c => c.ShopId == id)
+            .OrderByDescending(c => c.LastSeenAtUtc)
+            .Select(c => new { c.Version, c.LastSeenAtUtc })
+            .FirstOrDefaultAsync();
+
+        return Ok(new
+        {
+            shop = new { shop.Id, shop.Name, shop.Code, shop.IsActive, shop.CreatedAt, shop.OwnerEmail, shop.OwnerPhone },
+            stats = new
+            {
+                orderCount,
+                revenue,
+                ordersToday,
+                revenueToday,
+                userCount = users.Count,
+                avgOrder = orderCount > 0 ? Math.Round(revenue / orderCount, 2) : 0m
+            },
+            appVersion = checkin?.Version,
+            lastSeenAt = checkin?.LastSeenAtUtc,
+            users,
+            recentOrders
+        });
     }
 
     // POST api/shops — superadmin: create a shop and its first admin.
