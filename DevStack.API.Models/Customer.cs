@@ -13,4 +13,7 @@ public class Customer
     public decimal Balance { get; set; }
     public string? Notes { get; set; }
     public DateTime CreatedAt { get; set; }
+    // Loyalty stamp balance: +1 per attended purchase, -LoyaltyStampsRequired
+    // when a reward is redeemed.
+    public int LoyaltyStamps { get; set; }
 }

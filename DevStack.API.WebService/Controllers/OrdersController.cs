@@ -21,7 +21,7 @@ public class OrdersController : ControllerBase
         _currentShop = currentShop;
     }
 
-    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null, string? DineMode = null, string? TableNumber = null, List<PaymentRequest>? Payments = null, decimal? Tip = null, decimal? ServiceChargePct = null, int? AccountCustomerId = null);
+    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null, string? DineMode = null, string? TableNumber = null, List<PaymentRequest>? Payments = null, decimal? Tip = null, decimal? ServiceChargePct = null, int? AccountCustomerId = null, int? LoyaltyCustomerId = null, bool RedeemLoyalty = false);
     public record PaymentRequest(string Method, decimal Amount);
     public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null, string? Note = null, List<int>? ModifierIds = null);
     public record VoidOrderRequest(string Reason);
@@ -331,6 +331,24 @@ public class OrdersController : ControllerBase
                         alertRows.Add(new Notification { ShopId = order.ShopId, UserId = admin.Id, Title = "Low stock", Body = body, Type = "alert", CreatedAtUtc = alertNow });
                 }
                 _db.Notifications.AddRange(alertRows);
+            }
+        }
+
+        // Loyalty: earn or redeem a stamp for the attached customer, inside the
+        // same transaction as the sale. The shop config decides the threshold;
+        // redeeming (when eligible) spends LoyaltyStampsRequired stamps, else the
+        // purchase earns one. The POS shows the running count to the cashier.
+        if (request.LoyaltyCustomerId is int loyId)
+        {
+            var shop = await _db.Shops.FindAsync(order.ShopId);
+            var loyaltyCustomer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == loyId && c.ShopId == order.ShopId);
+            if (shop is { LoyaltyEnabled: true } && loyaltyCustomer is not null)
+            {
+                var required = shop.LoyaltyStampsRequired;
+                if (request.RedeemLoyalty && loyaltyCustomer.LoyaltyStamps >= required)
+                    loyaltyCustomer.LoyaltyStamps -= required;
+                else
+                    loyaltyCustomer.LoyaltyStamps += 1;
             }
         }
 

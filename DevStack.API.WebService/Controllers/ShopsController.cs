@@ -26,7 +26,14 @@ public class ShopsController : ControllerBase
     }
 
     public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName, string? OwnerEmail = null);
-    public record UpdateShopRequest(string Name, string? LogoUrl, string? ReceiptQrUrl, string? KitchenUrl = null);
+    // New fields are nullable so a partial update (e.g. the POS saving only
+    // branding) never silently resets loyalty / receipt settings — only fields
+    // actually sent are applied.
+    public record UpdateShopRequest(
+        string Name, string? LogoUrl, string? ReceiptQrUrl, string? KitchenUrl = null,
+        bool? LoyaltyEnabled = null, int? LoyaltyStampsRequired = null, string? LoyaltyReward = null,
+        string? ReceiptHeader = null, string? ReceiptFooter = null,
+        bool? ReceiptShowVat = null, bool? ReceiptShowQr = null, bool? ReceiptShowCashier = null);
     public record SetShopStatusRequest(bool IsActive);
     public record UpdateOwnerRequest(string? OwnerEmail, string? OwnerPhone);
 
@@ -319,10 +326,11 @@ public class ShopsController : ControllerBase
         var shop = await _db.Shops.FindAsync(shopId);
         if (shop is null) return NotFound();
 
-        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl, shop.KitchenUrl });
+        return Ok(ShopMe(shop));
     }
 
-    // PUT api/shops/me - shop admin (owner): update the current shop's branding.
+    // PUT api/shops/me - shop admin (owner): update the current shop's branding,
+    // loyalty and receipt settings.
     [Authorize(Roles = "admin")]
     [HttpPut("me")]
     public async Task<ActionResult> UpdateMe(UpdateShopRequest request)
@@ -341,8 +349,32 @@ public class ShopsController : ControllerBase
         shop.LogoUrl = request.LogoUrl?.Trim();
         shop.ReceiptQrUrl = string.IsNullOrWhiteSpace(request.ReceiptQrUrl) ? null : request.ReceiptQrUrl.Trim();
         shop.KitchenUrl = string.IsNullOrWhiteSpace(request.KitchenUrl) ? null : request.KitchenUrl.Trim();
-        await _db.SaveChangesAsync();
 
-        return Ok(new { shop.Id, shop.Name, shop.Code, shop.LogoUrl, shop.ReceiptQrUrl, shop.KitchenUrl });
+        // Loyalty (only apply what was sent).
+        if (request.LoyaltyEnabled.HasValue) shop.LoyaltyEnabled = request.LoyaltyEnabled.Value;
+        if (request.LoyaltyStampsRequired.HasValue) shop.LoyaltyStampsRequired = Math.Clamp(request.LoyaltyStampsRequired.Value, 2, 100);
+        if (request.LoyaltyReward != null)
+        {
+            var r = request.LoyaltyReward.Trim();
+            shop.LoyaltyReward = r.Length == 0 ? "Free item" : r;
+        }
+
+        // Receipt customisation ("" clears a text field; absent = unchanged).
+        if (request.ReceiptHeader != null) shop.ReceiptHeader = request.ReceiptHeader.Trim().Length == 0 ? null : request.ReceiptHeader.Trim();
+        if (request.ReceiptFooter != null) shop.ReceiptFooter = request.ReceiptFooter.Trim().Length == 0 ? null : request.ReceiptFooter.Trim();
+        if (request.ReceiptShowVat.HasValue) shop.ReceiptShowVat = request.ReceiptShowVat.Value;
+        if (request.ReceiptShowQr.HasValue) shop.ReceiptShowQr = request.ReceiptShowQr.Value;
+        if (request.ReceiptShowCashier.HasValue) shop.ReceiptShowCashier = request.ReceiptShowCashier.Value;
+
+        await _db.SaveChangesAsync();
+        return Ok(ShopMe(shop));
     }
+
+    // Shared shape for GET/PUT me: branding + loyalty + receipt settings.
+    private static object ShopMe(Shop s) => new
+    {
+        s.Id, s.Name, s.Code, s.LogoUrl, s.ReceiptQrUrl, s.KitchenUrl,
+        s.LoyaltyEnabled, s.LoyaltyStampsRequired, s.LoyaltyReward,
+        s.ReceiptHeader, s.ReceiptFooter, s.ReceiptShowVat, s.ReceiptShowQr, s.ReceiptShowCashier
+    };
 }

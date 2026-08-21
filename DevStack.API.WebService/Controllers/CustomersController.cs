@@ -61,7 +61,7 @@ public class CustomersController : ControllerBase
             agg.TryGetValue(c.Id, out var a);
             return new
             {
-                c.Id, c.Name, c.Phone, c.Email, c.CreditLimit, c.Balance, c.Notes, c.CreatedAt,
+                c.Id, c.Name, c.Phone, c.Email, c.CreditLimit, c.Balance, c.Notes, c.CreatedAt, c.LoyaltyStamps,
                 OrderCount = a?.OrderCount ?? 0,
                 OrderTotal = a?.OrderTotal ?? 0m
             };

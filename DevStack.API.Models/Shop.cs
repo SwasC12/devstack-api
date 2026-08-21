@@ -14,4 +14,20 @@ public class Shop
     public string? KitchenUrl { get; set; } // LAN webhook target for the kitchen display (e.g. http://192.168.1.50:8123)
     public bool IsActive { get; set; } = true; // suspended shops can't sign in (platform lifecycle)
     public DateTime CreatedAt { get; set; }
+
+    // ── Loyalty (stamp card) ──────────────────────────────────────────────
+    // Off by default. When on, a purchase with a customer attached earns one
+    // stamp; at LoyaltyStampsRequired the customer can redeem LoyaltyReward.
+    public bool LoyaltyEnabled { get; set; } = false;
+    public int LoyaltyStampsRequired { get; set; } = 10;
+    public string LoyaltyReward { get; set; } = "Free item";
+
+    // ── Receipt customisation (per shop) ──────────────────────────────────
+    // Nulls / the true defaults reproduce the current hardcoded receipt, so an
+    // un-configured shop looks exactly as before.
+    public string? ReceiptHeader { get; set; }   // extra line under the shop name (address / tagline)
+    public string? ReceiptFooter { get; set; }   // custom thank-you / promo footer text
+    public bool ReceiptShowVat { get; set; } = true;
+    public bool ReceiptShowQr { get; set; } = true;
+    public bool ReceiptShowCashier { get; set; } = true;
 }
