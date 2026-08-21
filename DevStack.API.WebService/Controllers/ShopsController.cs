@@ -167,7 +167,7 @@ public class ShopsController : ControllerBase
         if (await _db.Shops.AnyAsync(s => s.Code == code))
             return BadRequest(new { error = $"A shop with code '{code}' already exists." });
 
-        var shop = new Shop { Name = name, Code = code, CreatedAt = DateTime.UtcNow.AddHours(2) };
+        var shop = new Shop { Name = name, Code = code, CreatedAt = DateTime.UtcNow.AddHours(2), JoinToken = await GenerateUniqueJoinTokenAsync() };
         _db.Shops.Add(shop);
         await _db.SaveChangesAsync();
 
@@ -326,7 +326,50 @@ public class ShopsController : ControllerBase
         var shop = await _db.Shops.FindAsync(shopId);
         if (shop is null) return NotFound();
 
+        // Backfill: shops created before join tokens existed get one on first load.
+        if (string.IsNullOrEmpty(shop.JoinToken))
+        {
+            shop.JoinToken = await GenerateUniqueJoinTokenAsync();
+            await _db.SaveChangesAsync();
+        }
+
         return Ok(ShopMe(shop));
+    }
+
+    // POST api/shops/me/regenerate-join-token — shop admin: rotate the public
+    // loyalty join token. Any previously printed sign-up QR / poster stops
+    // working immediately, so this is the fix if one leaks or is misused.
+    [Authorize(Roles = "admin")]
+    [HttpPost("me/regenerate-join-token")]
+    public async Task<ActionResult> RegenerateJoinToken()
+    {
+        var shopId = int.Parse(User.FindFirstValue("shopId") ?? "-1");
+        if (shopId <= 0) return NotFound();
+
+        var shop = await _db.Shops.FindAsync(shopId);
+        if (shop is null) return NotFound();
+
+        shop.JoinToken = await GenerateUniqueJoinTokenAsync();
+        await _db.SaveChangesAsync();
+        return Ok(ShopMe(shop));
+    }
+
+    // Unguessable, QR-friendly join token (no ambiguous chars). 12 chars over a
+    // 31-symbol alphabet ≈ 59 bits — not feasible to enumerate. Retries on the
+    // (astronomically rare) collision against the unique index.
+    private async Task<string> GenerateUniqueJoinTokenAsync()
+    {
+        const string alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(12);
+            var sb = new System.Text.StringBuilder(12);
+            foreach (var b in bytes) sb.Append(alphabet[b % alphabet.Length]);
+            var candidate = sb.ToString();
+            if (!await _db.Shops.AnyAsync(s => s.JoinToken == candidate))
+                return candidate;
+        }
+        return "J" + DateTime.UtcNow.Ticks.ToString("X");
     }
 
     // PUT api/shops/me - shop admin (owner): update the current shop's branding,
@@ -373,7 +416,7 @@ public class ShopsController : ControllerBase
     // Shared shape for GET/PUT me: branding + loyalty + receipt settings.
     private static object ShopMe(Shop s) => new
     {
-        s.Id, s.Name, s.Code, s.LogoUrl, s.ReceiptQrUrl, s.KitchenUrl,
+        s.Id, s.Name, s.Code, s.JoinToken, s.LogoUrl, s.ReceiptQrUrl, s.KitchenUrl,
         s.LoyaltyEnabled, s.LoyaltyStampsRequired, s.LoyaltyReward,
         s.ReceiptHeader, s.ReceiptFooter, s.ReceiptShowVat, s.ReceiptShowQr, s.ReceiptShowCashier
     };

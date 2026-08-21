@@ -60,6 +60,13 @@ public class DevStackDataModel : DbContext
             .Property(s => s.IsActive)
             .HasDefaultValue(true);
 
+        // Public loyalty join token: unguessable, unique per shop (filtered so
+        // pre-token shops with NULL don't collide before backfill).
+        modelBuilder.Entity<Shop>()
+            .HasIndex(s => s.JoinToken)
+            .IsUnique()
+            .HasFilter("[JoinToken] IS NOT NULL");
+
         modelBuilder.Entity<MenuItem>()
             .Property(i => i.Price)
             .HasPrecision(18, 2);

@@ -7,6 +7,11 @@ public class Shop
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Code { get; set; } = string.Empty; // short, uppercase, unique — typed at login
+    // Randomised, unguessable token for the PUBLIC loyalty join URL
+    // (/join/<JoinToken>). Deliberately NOT the human Code: the code is a login
+    // secret typed by staff, so it must never appear in a customer-facing QR.
+    // Rotatable by the admin to invalidate an old printed poster.
+    public string? JoinToken { get; set; }
     public string? LogoUrl { get; set; } // owner-customisable branding, shown in the POS
     public string? ReceiptQrUrl { get; set; } // scannable QR printed on receipts (WhatsApp / review / feedback link)
     public string? OwnerEmail { get; set; } // platform contact info (superadmin-maintained; future owner emails)

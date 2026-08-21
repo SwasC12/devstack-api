@@ -10,9 +10,9 @@ namespace DevStack.API.WebService.Controllers;
 // PUBLIC, unauthenticated endpoints for customer self-enrolment. A shopper
 // scans the shop's join QR, which opens the web signup page; the page reads the
 // shop's branding here and posts the signup here. Everything is scoped to the
-// shop CODE in the URL - no auth, no shop claim - so all data access opts out
-// of the per-shop query filter and sets ShopId explicitly from the resolved
-// shop. Signup is rate-limited to blunt abuse.
+// shop's random JOIN TOKEN in the URL (never the human login code) - no auth,
+// no shop claim - so all data access opts out of the per-shop query filter and
+// sets ShopId explicitly from the resolved shop. Signup is rate-limited.
 [ApiController]
 [Route("api/public")]
 [AllowAnonymous]
@@ -22,19 +22,26 @@ public class PublicController : ControllerBase
     public PublicController(DevStackDataModel db) => _db = db;
 
     public record SignupRequest(string? Name, string? Phone, string? Email, bool Consent);
+    public record MemberLookupRequest(string? PhoneOrCode);
 
-    // GET api/public/shop/{code} — branding + loyalty summary for the signup
-    // page. Only active shops; nothing sensitive is exposed.
-    [HttpGet("shop/{code}")]
-    public async Task<ActionResult> GetShop(string code)
+    // Resolve the shop behind a public join token (active shops only).
+    private Task<Shop?> ShopByTokenAsync(string token, bool tracking = false)
     {
-        var norm = (code ?? "").Trim().ToUpperInvariant();
-        var shop = await _db.Shops.AsNoTracking().FirstOrDefaultAsync(s => s.Code == norm && s.IsActive);
+        var norm = (token ?? "").Trim().ToUpperInvariant();
+        var q = tracking ? _db.Shops : _db.Shops.AsNoTracking();
+        return q.FirstOrDefaultAsync(s => s.JoinToken == norm && s.IsActive);
+    }
+
+    // GET api/public/shop/{token} — branding + loyalty summary for the signup
+    // page. Only active shops; the real login code is NEVER exposed.
+    [HttpGet("shop/{token}")]
+    public async Task<ActionResult> GetShop(string token)
+    {
+        var shop = await ShopByTokenAsync(token);
         if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
         return Ok(new
         {
             shop.Name,
-            shop.Code,
             shop.LogoUrl,
             shop.LoyaltyEnabled,
             shop.LoyaltyReward,
@@ -42,14 +49,43 @@ public class PublicController : ControllerBase
         });
     }
 
-    // POST api/public/signup/{code} — enrol (or re-find) a customer for the shop
-    // and return the loyalty code their personal QR encodes.
-    [HttpPost("signup/{code}")]
+    // POST api/public/member/{token} — returning customer signs in with their
+    // phone number or personal loyalty code to view their card (name + points).
+    [HttpPost("member/{token}")]
     [EnableRateLimiting("auth")]
-    public async Task<ActionResult> Signup(string code, SignupRequest request)
+    public async Task<ActionResult> Member(string token, MemberLookupRequest request)
     {
-        var norm = (code ?? "").Trim().ToUpperInvariant();
-        var shop = await _db.Shops.FirstOrDefaultAsync(s => s.Code == norm && s.IsActive);
+        var shop = await ShopByTokenAsync(token);
+        if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
+
+        var q = (request.PhoneOrCode ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(q))
+            return BadRequest(new { error = "Enter your phone number or loyalty code." });
+
+        var upper = q.ToUpperInvariant();
+        var customer = await _db.Customers.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.ShopId == shop.Id && (c.Phone == q || c.LoyaltyCode == upper));
+        if (customer is null)
+            return NotFound(new { error = "No loyalty card found. Please sign up." });
+
+        return Ok(new
+        {
+            name = customer.Name,
+            loyaltyCode = customer.LoyaltyCode,
+            shopName = shop.Name,
+            reward = shop.LoyaltyReward,
+            stampsRequired = shop.LoyaltyStampsRequired,
+            stamps = customer.LoyaltyStamps
+        });
+    }
+
+    // POST api/public/signup/{token} — enrol (or re-find) a customer for the shop
+    // and return the loyalty code their personal QR encodes.
+    [HttpPost("signup/{token}")]
+    [EnableRateLimiting("auth")]
+    public async Task<ActionResult> Signup(string token, SignupRequest request)
+    {
+        var shop = await ShopByTokenAsync(token, tracking: true);
         if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
         if (!shop.LoyaltyEnabled) return BadRequest(new { error = "This shop's loyalty programme isn't active." });
 
