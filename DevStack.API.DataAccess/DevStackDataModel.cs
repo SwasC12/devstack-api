@@ -138,6 +138,12 @@ public class DevStackDataModel : DbContext
             .HasIndex(d => d.ShopId);
         modelBuilder.Entity<Notification>()
             .HasIndex(n => n.ShopId);
+        // Loyalty lookup: the POS finds a customer by the code their QR encodes.
+        // Unique + filtered (nulls excluded) so pre-loyalty records don't clash.
+        modelBuilder.Entity<Customer>()
+            .HasIndex(c => c.LoyaltyCode)
+            .IsUnique()
+            .HasFilter("[LoyaltyCode] IS NOT NULL");
 
         // Auth hot path: every refresh/login looks a token up by hash and the
         // table keeps revoked tokens forever - unindexed this is a full scan.

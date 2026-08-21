@@ -68,6 +68,25 @@ public class CustomersController : ControllerBase
         }));
     }
 
+    // GET api/customers/loyalty-lookup?q= — ANY shop user (cashiers included):
+    // a minimal customer lookup for attaching loyalty at the POS. Matches an
+    // exact loyalty code (from a scanned QR) or a phone/name substring. Returns
+    // only what the till needs — never the full account directory.
+    [Authorize]
+    [HttpGet("loyalty-lookup")]
+    public async Task<ActionResult> LoyaltyLookup([FromQuery] string q)
+    {
+        var term = (q ?? "").Trim();
+        if (term.Length < 2) return Ok(Array.Empty<object>());
+        var matches = await _db.Customers.AsNoTracking()
+            .Where(c => c.LoyaltyCode == term || (c.Phone != null && c.Phone.Contains(term)) || c.Name.Contains(term))
+            .OrderBy(c => c.Name)
+            .Take(6)
+            .Select(c => new { c.Id, c.Name, c.Phone, c.LoyaltyStamps })
+            .ToListAsync();
+        return Ok(matches);
+    }
+
     [Authorize(Roles = "admin,manager")]
     [HttpPost]
     public async Task<ActionResult> Create(CustomerWrite request)

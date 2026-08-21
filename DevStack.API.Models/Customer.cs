@@ -16,4 +16,12 @@ public class Customer
     // Loyalty stamp balance: +1 per attended purchase, -LoyaltyStampsRequired
     // when a reward is redeemed.
     public int LoyaltyStamps { get; set; }
+    // Per-customer loyalty identity: the code their personal QR encodes and the
+    // POS scans / looks up at checkout. Unique across all shops. Null for
+    // pre-loyalty records until first assigned.
+    public string? LoyaltyCode { get; set; }
+    // True when the customer enrolled themselves via the public join page.
+    public bool SelfSignup { get; set; }
+    // Consent captured at signup (POPIA): agreed to store details + loyalty comms.
+    public bool MarketingConsent { get; set; }
 }
