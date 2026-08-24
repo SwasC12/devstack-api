@@ -78,8 +78,20 @@ public class CustomersController : ControllerBase
     {
         var term = (q ?? "").Trim();
         if (term.Length < 2) return Ok(Array.Empty<object>());
+
+        // Normalize phone search: if term looks like a phone number, search both
+        // "+27..." and "0..." formats. SA phones can be stored either way.
+        var isPhone = term.All(c => char.IsDigit(c) || c == '+');
+        var altPhone = isPhone && term.StartsWith("0")
+            ? "+27" + term.Substring(1)
+            : isPhone && term.StartsWith("+27")
+                ? "0" + term.Substring(3)
+                : null;
+
         var matches = await _db.Customers.AsNoTracking()
-            .Where(c => c.LoyaltyCode == term || (c.Phone != null && c.Phone.Contains(term)) || c.Name.Contains(term))
+            .Where(c => c.LoyaltyCode == term
+                || (c.Phone != null && (c.Phone.Contains(term) || (altPhone != null && c.Phone.Contains(altPhone))))
+                || c.Name.Contains(term))
             .OrderBy(c => c.Name)
             .Take(6)
             .Select(c => new { c.Id, c.Name, c.Phone, c.LoyaltyStamps })
