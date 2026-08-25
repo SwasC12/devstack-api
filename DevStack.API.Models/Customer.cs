@@ -20,6 +20,11 @@ public class Customer
     // POS scans / looks up at checkout. Unique across all shops. Null for
     // pre-loyalty records until first assigned.
     public string? LoyaltyCode { get; set; }
+    // BCrypt hash of the loyalty password the customer sets at signup. Required
+    // to view their card via the public "Check my points" sign-in, so knowing a
+    // phone number alone is not enough to open someone else's card. Null for
+    // legacy self-signups made before passwords existed (claimed on first login).
+    public string? LoyaltyPasswordHash { get; set; }
     // True when the customer enrolled themselves via the public join page.
     public bool SelfSignup { get; set; }
     // Consent captured at signup (POPIA): agreed to store details + loyalty comms.

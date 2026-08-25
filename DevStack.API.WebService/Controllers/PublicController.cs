@@ -21,8 +21,22 @@ public class PublicController : ControllerBase
     private readonly DevStackDataModel _db;
     public PublicController(DevStackDataModel db) => _db = db;
 
-    public record SignupRequest(string? Name, string? Phone, string? Email, bool Consent);
-    public record MemberLookupRequest(string? PhoneOrCode);
+    public record SignupRequest(string? Name, string? Phone, string? Email, bool Consent, string? Password);
+    public record MemberLookupRequest(string? Identifier, string? Password);
+    public record MemberResumeRequest(string? LoyaltyCode);
+
+    private const int MinPasswordLength = 6;
+
+    // Card payload shown to the signed-in customer.
+    private static object Card(Customer c, Shop s) => new
+    {
+        name = c.Name,
+        loyaltyCode = c.LoyaltyCode,
+        shopName = s.Name,
+        reward = s.LoyaltyReward,
+        stampsRequired = s.LoyaltyStampsRequired,
+        stamps = c.LoyaltyStamps
+    };
 
     // Resolve the shop behind a public join token (active shops only).
     private Task<Shop?> ShopByTokenAsync(string token, bool tracking = false)
@@ -49,34 +63,69 @@ public class PublicController : ControllerBase
         });
     }
 
-    // POST api/public/member/{token} — returning customer signs in with their
-    // phone number or personal loyalty code to view their card (name + points).
+    // POST api/public/member/{token} — returning customer SIGNS IN with their
+    // phone / email / loyalty code AND their password. The password is what
+    // stops someone who merely knows a phone number from opening the card.
     [HttpPost("member/{token}")]
     [EnableRateLimiting("auth")]
     public async Task<ActionResult> Member(string token, MemberLookupRequest request)
     {
-        var shop = await ShopByTokenAsync(token);
+        var shop = await ShopByTokenAsync(token, tracking: true);
         if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
 
-        var q = (request.PhoneOrCode ?? "").Trim();
+        var q = (request.Identifier ?? "").Trim();
+        var password = request.Password ?? "";
         if (string.IsNullOrWhiteSpace(q))
-            return BadRequest(new { error = "Enter your phone number or loyalty code." });
+            return BadRequest(new { error = "Enter your phone, email or loyalty code." });
+        if (string.IsNullOrEmpty(password))
+            return BadRequest(new { error = "Enter your password." });
 
         var upper = q.ToUpperInvariant();
-        var customer = await _db.Customers.AsNoTracking().IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.ShopId == shop.Id && (c.Phone == q || c.LoyaltyCode == upper));
+        var lower = q.ToLowerInvariant();
+        var qNorm = NormalizePhone(q);
+        var customer = await _db.Customers.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.ShopId == shop.Id &&
+                (c.LoyaltyCode == upper
+                 || (c.Email != null && c.Email.ToLower() == lower)
+                 || (c.Phone != null && c.Phone.Replace(" ", "").Replace("-", "") == qNorm)));
         if (customer is null)
             return NotFound(new { error = "No loyalty card found. Please sign up." });
 
-        return Ok(new
+        if (string.IsNullOrEmpty(customer.LoyaltyPasswordHash))
         {
-            name = customer.Name,
-            loyaltyCode = customer.LoyaltyCode,
-            shopName = shop.Name,
-            reward = shop.LoyaltyReward,
-            stampsRequired = shop.LoyaltyStampsRequired,
-            stamps = customer.LoyaltyStamps
-        });
+            // Legacy account created before passwords: first successful sign-in
+            // sets the password (a one-time claim for the transition window).
+            if (password.Length < MinPasswordLength)
+                return BadRequest(new { error = $"Set a password of at least {MinPasswordLength} characters." });
+            customer.LoyaltyPasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+            await _db.SaveChangesAsync();
+        }
+        else if (!BCrypt.Net.BCrypt.Verify(password, customer.LoyaltyPasswordHash))
+        {
+            return Unauthorized(new { error = "Incorrect password." });
+        }
+
+        return Ok(Card(customer, shop));
+    }
+
+    // POST api/public/member-resume/{token} — refresh the card for a device that
+    // already signed in, using the loyalty code kept in that browser. No password
+    // (the random code is the device's own session token); read-only.
+    [HttpPost("member-resume/{token}")]
+    [EnableRateLimiting("auth")]
+    public async Task<ActionResult> MemberResume(string token, MemberResumeRequest request)
+    {
+        var shop = await ShopByTokenAsync(token);
+        if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
+
+        var code = (request.LoyaltyCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(code)) return BadRequest(new { error = "Missing code." });
+
+        var customer = await _db.Customers.AsNoTracking().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.ShopId == shop.Id && c.LoyaltyCode == code);
+        if (customer is null) return NotFound(new { error = "Card not found." });
+
+        return Ok(Card(customer, shop));
     }
 
     // POST api/public/signup/{token} — enrol (or re-find) a customer for the shop
@@ -92,9 +141,12 @@ public class PublicController : ControllerBase
         var name = request.Name?.Trim();
         var phone = request.Phone?.Trim();
         var email = request.Email?.Trim();
+        var password = request.Password ?? "";
         if (string.IsNullOrWhiteSpace(name)) return BadRequest(new { error = "Please enter your name." });
         if (string.IsNullOrWhiteSpace(phone) && string.IsNullOrWhiteSpace(email))
             return BadRequest(new { error = "Please give a phone number or email." });
+        if (password.Length < MinPasswordLength)
+            return BadRequest(new { error = $"Please set a password of at least {MinPasswordLength} characters." });
         if (!request.Consent) return BadRequest(new { error = "Please accept the terms to join." });
 
         // Format validation (mirrors the client, but the server is the authority).
@@ -112,7 +164,7 @@ public class PublicController : ControllerBase
             ((phoneNorm != null && c.Phone != null && c.Phone.Replace(" ", "").Replace("-", "") == phoneNorm)
              || (emailNorm != null && c.Email != null && c.Email.ToLower() == emailNorm)));
         if (dup)
-            return Conflict(new { error = "You're already a member. Tap “Check my points” to sign in." });
+            return Conflict(new { error = "This email/number is already in use." });
 
         var customer = new Customer
         {
@@ -123,20 +175,13 @@ public class PublicController : ControllerBase
             SelfSignup = true,
             MarketingConsent = request.Consent,
             CreatedAt = DateTime.UtcNow.AddHours(2),
-            LoyaltyCode = await GenerateUniqueLoyaltyCodeAsync()
+            LoyaltyCode = await GenerateUniqueLoyaltyCodeAsync(),
+            LoyaltyPasswordHash = BCrypt.Net.BCrypt.HashPassword(password)
         };
         _db.Customers.Add(customer);
 
         await _db.SaveChangesAsync();
-        return Ok(new
-        {
-            name = customer.Name,
-            loyaltyCode = customer.LoyaltyCode,
-            shopName = shop.Name,
-            reward = shop.LoyaltyReward,
-            stampsRequired = shop.LoyaltyStampsRequired,
-            stamps = customer.LoyaltyStamps
-        });
+        return Ok(Card(customer, shop));
     }
 
     // Digits-only phone (spaces/dashes stripped) for duplicate comparison; null
