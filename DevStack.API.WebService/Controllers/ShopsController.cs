@@ -33,7 +33,8 @@ public class ShopsController : ControllerBase
         string Name, string? LogoUrl, string? ReceiptQrUrl, string? KitchenUrl = null,
         bool? LoyaltyEnabled = null, int? LoyaltyStampsRequired = null, string? LoyaltyReward = null,
         string? ReceiptHeader = null, string? ReceiptFooter = null,
-        bool? ReceiptShowVat = null, bool? ReceiptShowQr = null, bool? ReceiptShowCashier = null);
+        bool? ReceiptShowVat = null, bool? ReceiptShowQr = null, bool? ReceiptShowCashier = null,
+        bool? ReceiptShowLogo = null);
     public record SetShopStatusRequest(bool IsActive);
     public record UpdateOwnerRequest(string? OwnerEmail, string? OwnerPhone);
 
@@ -408,6 +409,7 @@ public class ShopsController : ControllerBase
         if (request.ReceiptShowVat.HasValue) shop.ReceiptShowVat = request.ReceiptShowVat.Value;
         if (request.ReceiptShowQr.HasValue) shop.ReceiptShowQr = request.ReceiptShowQr.Value;
         if (request.ReceiptShowCashier.HasValue) shop.ReceiptShowCashier = request.ReceiptShowCashier.Value;
+        if (request.ReceiptShowLogo.HasValue) shop.ReceiptShowLogo = request.ReceiptShowLogo.Value;
 
         await _db.SaveChangesAsync();
         return Ok(ShopMe(shop));
@@ -418,6 +420,6 @@ public class ShopsController : ControllerBase
     {
         s.Id, s.Name, s.Code, s.JoinToken, s.LogoUrl, s.ReceiptQrUrl, s.KitchenUrl,
         s.LoyaltyEnabled, s.LoyaltyStampsRequired, s.LoyaltyReward,
-        s.ReceiptHeader, s.ReceiptFooter, s.ReceiptShowVat, s.ReceiptShowQr, s.ReceiptShowCashier
+        s.ReceiptHeader, s.ReceiptFooter, s.ReceiptShowVat, s.ReceiptShowQr, s.ReceiptShowCashier, s.ReceiptShowLogo
     };
 }

@@ -35,4 +35,5 @@ public class Shop
     public bool ReceiptShowVat { get; set; } = true;
     public bool ReceiptShowQr { get; set; } = true;
     public bool ReceiptShowCashier { get; set; } = true;
+    public bool ReceiptShowLogo { get; set; } = true; // print the shop logo at the top of the receipt
 }
