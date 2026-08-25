@@ -97,36 +97,35 @@ public class PublicController : ControllerBase
             return BadRequest(new { error = "Please give a phone number or email." });
         if (!request.Consent) return BadRequest(new { error = "Please accept the terms to join." });
 
-        // De-dupe by phone within the shop: a returning shopper gets their
-        // existing card back rather than a duplicate.
-        Customer? customer = null;
-        if (!string.IsNullOrWhiteSpace(phone))
-            customer = await _db.Customers.IgnoreQueryFilters()
-                .FirstOrDefaultAsync(c => c.ShopId == shop.Id && c.Phone == phone);
+        // Format validation (mirrors the client, but the server is the authority).
+        if (!string.IsNullOrWhiteSpace(phone) && !IsValidPhone(phone))
+            return BadRequest(new { error = "Please enter a valid phone number." });
+        if (!string.IsNullOrWhiteSpace(email) && !IsValidEmail(email))
+            return BadRequest(new { error = "Please enter a valid email address." });
 
-        if (customer is null)
+        // One membership per phone / email: a returning shopper must sign in
+        // (Check my points), not create a second card. Phone is matched
+        // space/dash-insensitively; email case-insensitively.
+        var phoneNorm = NormalizePhone(phone);
+        var emailNorm = email?.ToLowerInvariant();
+        var dup = await _db.Customers.IgnoreQueryFilters().AnyAsync(c => c.ShopId == shop.Id &&
+            ((phoneNorm != null && c.Phone != null && c.Phone.Replace(" ", "").Replace("-", "") == phoneNorm)
+             || (emailNorm != null && c.Email != null && c.Email.ToLower() == emailNorm)));
+        if (dup)
+            return Conflict(new { error = "You're already a member. Tap “Check my points” to sign in." });
+
+        var customer = new Customer
         {
-            customer = new Customer
-            {
-                ShopId = shop.Id,
-                Name = name,
-                Phone = string.IsNullOrWhiteSpace(phone) ? null : phone,
-                Email = string.IsNullOrWhiteSpace(email) ? null : email,
-                SelfSignup = true,
-                MarketingConsent = request.Consent,
-                CreatedAt = DateTime.UtcNow.AddHours(2),
-                LoyaltyCode = await GenerateUniqueLoyaltyCodeAsync()
-            };
-            _db.Customers.Add(customer);
-        }
-        else
-        {
-            // Returning customer: refresh contact details + ensure they have a code.
-            customer.Name = name;
-            if (!string.IsNullOrWhiteSpace(email)) customer.Email = email;
-            customer.MarketingConsent = request.Consent;
-            customer.LoyaltyCode ??= await GenerateUniqueLoyaltyCodeAsync();
-        }
+            ShopId = shop.Id,
+            Name = name,
+            Phone = string.IsNullOrWhiteSpace(phone) ? null : phone,
+            Email = string.IsNullOrWhiteSpace(email) ? null : email,
+            SelfSignup = true,
+            MarketingConsent = request.Consent,
+            CreatedAt = DateTime.UtcNow.AddHours(2),
+            LoyaltyCode = await GenerateUniqueLoyaltyCodeAsync()
+        };
+        _db.Customers.Add(customer);
 
         await _db.SaveChangesAsync();
         return Ok(new
@@ -138,6 +137,24 @@ public class PublicController : ControllerBase
             stampsRequired = shop.LoyaltyStampsRequired,
             stamps = customer.LoyaltyStamps
         });
+    }
+
+    // Digits-only phone (spaces/dashes stripped) for duplicate comparison; null
+    // when there's no phone.
+    private static string? NormalizePhone(string? phone)
+        => string.IsNullOrWhiteSpace(phone) ? null : phone.Replace(" ", "").Replace("-", "");
+
+    private static bool IsValidPhone(string phone)
+    {
+        var d = phone.Replace(" ", "").Replace("-", "");
+        if (d.StartsWith("+")) d = d.Substring(1);
+        return d.Length is >= 10 and <= 13 && d.All(char.IsDigit);
+    }
+
+    private static bool IsValidEmail(string email)
+    {
+        try { var a = new System.Net.Mail.MailAddress(email); return a.Address == email; }
+        catch { return false; }
     }
 
     // Short, URL/QR-friendly, unambiguous code (no 0/O/1/I). Retries on the rare
