@@ -346,9 +346,16 @@ public class OrdersController : ControllerBase
             {
                 var required = shop.LoyaltyStampsRequired;
                 if (request.RedeemLoyalty && loyaltyCustomer.LoyaltyStamps >= required)
+                {
+                    // Redeem: subtract the required stamps
                     loyaltyCustomer.LoyaltyStamps -= required;
-                else
+                }
+                else if (!request.RedeemLoyalty)
+                {
+                    // Earn: add one stamp (only when not attempting to redeem)
                     loyaltyCustomer.LoyaltyStamps += 1;
+                }
+                // If RedeemLoyalty is true but not enough stamps, do nothing
             }
         }
 
