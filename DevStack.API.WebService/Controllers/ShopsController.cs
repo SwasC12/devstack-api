@@ -77,8 +77,10 @@ public class ShopsController : ControllerBase
         var brandNames = await _db.Brands.Select(b => new { b.Id, b.Name }).ToListAsync();
         var brandMap = brandNames.ToDictionary(b => b.Id, b => b.Name);
 
+        // Exclude superadmins (null ShopId) — a null dictionary key would throw.
         var userCounts = (await _db.Users
-            .GroupBy(u => u.ShopId)
+            .Where(u => u.ShopId != null)
+            .GroupBy(u => u.ShopId!.Value)
             .Select(g => new { ShopId = g.Key, Count = g.Count() })
             .ToListAsync())
             .ToDictionary(x => x.ShopId, x => x.Count);
