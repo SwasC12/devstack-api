@@ -35,6 +35,34 @@ public class OpsController : ControllerBase
         return a.Length > 0 && a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
     }
 
+    // GET api/ops/overview-timing — times each query the platform overview runs,
+    // to find what's slow. Ops-key gated.
+    [HttpGet("overview-timing")]
+    public async Task<ActionResult> OverviewTiming()
+    {
+        if (!OpsAuthorized()) return Unauthorized(new { error = "Invalid ops key." });
+        var today = DateTime.UtcNow.AddHours(2).Date;
+        var since30d = DateTime.UtcNow.AddDays(-30);
+        var r = new Dictionary<string, object>();
+
+        async Task<long> Time(Func<Task> work) { var sw = System.Diagnostics.Stopwatch.StartNew(); await work(); sw.Stop(); return sw.ElapsedMilliseconds; }
+
+        r["shops"] = await Time(async () => await _db.Shops.AsNoTracking().Select(s => new { s.IsActive, s.BillingStatus, s.MonthlyPrice }).ToListAsync());
+        r["eventCounts"] = await Time(async () => await _db.PlatformEvents.Where(e => e.CreatedAtUtc >= since30d && (e.Type == "password_reset" || e.Type == "push_failed")).GroupBy(e => e.Type).Select(g => new { g.Key, C = g.Count() }).ToListAsync());
+        r["ordersToday"] = await Time(async () => await _db.Orders.IgnoreQueryFilters().CountAsync(o => o.CreatedAt >= today && o.VoidedAt == null));
+        r["notifications30d"] = await Time(async () => await _db.Notifications.CountAsync(n => n.CreatedAtUtc >= since30d));
+        r["eventsTop10"] = await Time(async () => await _db.PlatformEvents.OrderByDescending(e => e.CreatedAtUtc).Take(10).Select(e => e.Id).ToListAsync());
+        r["currentRelease"] = await Time(async () => await _db.AppReleases.Where(x => x.IsCurrent).OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync());
+        r["checkins"] = await Time(async () => await _db.AppCheckins.ToListAsync());
+        r["rowcounts"] = new
+        {
+            orders = await _db.Orders.IgnoreQueryFilters().CountAsync(),
+            notifications = await _db.Notifications.CountAsync(),
+            platformEvents = await _db.PlatformEvents.CountAsync(),
+        };
+        return Ok(r);
+    }
+
     // POST api/ops/cloudinary-sweep?apply=false — find (and optionally delete)
     // Cloudinary images in the shop-* folders that no menu item / shop / brand
     // still references. Dry-run by default; apply=true deletes.
