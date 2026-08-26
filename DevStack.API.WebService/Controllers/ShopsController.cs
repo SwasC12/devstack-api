@@ -405,9 +405,9 @@ public class ShopsController : ControllerBase
         return Ok(new { shop.Id, shop.IsArchived, shop.IsActive });
     }
 
-    // DELETE api/shops/{id} — superadmin: PERMANENTLY delete a shop. Only allowed
-    // for shops with NO sales history (test/abandoned shops), so real financial
-    // records can never be destroyed by accident — those must be archived instead.
+    // DELETE api/shops/{id} — superadmin: PERMANENTLY delete a shop and ALL its
+    // data, including its full sales history, in one transaction. Irreversible —
+    // the UI confirms hard. Use Archive to keep the data instead.
     [Authorize(Roles = "superadmin")]
     [HttpDelete("{id:int}")]
     public async Task<ActionResult> DeleteShop(int id)
@@ -415,17 +415,22 @@ public class ShopsController : ControllerBase
         var shop = await _db.Shops.FindAsync(id);
         if (shop is null) return NotFound();
 
-        if (await _db.Orders.IgnoreQueryFilters().AnyAsync(o => o.ShopId == id))
-            return BadRequest(new { error = "This shop has sales history and can't be deleted. Archive it instead." });
-
         await using var tx = await _db.Database.BeginTransactionAsync();
         // Gather child-table parent ids first (these tables hang off MenuItem /
-        // ModifierGroup / PurchaseOrder, not ShopId directly). No orders exist,
-        // so all order-child tables are already empty and need no clearing.
+        // ModifierGroup / PurchaseOrder / Order, not ShopId directly).
         var userIds = await _db.Users.IgnoreQueryFilters().Where(u => u.ShopId == id).Select(u => u.Id).ToListAsync();
         var menuItemIds = await _db.MenuItems.IgnoreQueryFilters().Where(m => m.ShopId == id).Select(m => m.Id).ToListAsync();
         var groupIds = await _db.ModifierGroups.Where(g => menuItemIds.Contains(g.MenuItemId)).Select(g => g.Id).ToListAsync();
         var poIds = await _db.PurchaseOrders.IgnoreQueryFilters().Where(p => p.ShopId == id).Select(p => p.Id).ToListAsync();
+        var orderIds = await _db.Orders.IgnoreQueryFilters().Where(o => o.ShopId == id).Select(o => o.Id).ToListAsync();
+        var orderItemIds = await _db.OrderItems.Where(oi => orderIds.Contains(oi.OrderId)).Select(oi => oi.Id).ToListAsync();
+
+        // Order history first (children before parents).
+        await _db.OrderItemModifiers.Where(m => orderItemIds.Contains(m.OrderItemId)).ExecuteDeleteAsync();
+        await _db.OrderItems.Where(oi => orderIds.Contains(oi.OrderId)).ExecuteDeleteAsync();
+        await _db.OrderPayments.IgnoreQueryFilters().Where(p => p.ShopId == id).ExecuteDeleteAsync();
+        await _db.OrderRefunds.Where(r => orderIds.Contains(r.OrderId)).ExecuteDeleteAsync();
+        await _db.Orders.IgnoreQueryFilters().Where(o => o.ShopId == id).ExecuteDeleteAsync();
 
         await _db.RefreshTokens.Where(t => userIds.Contains(t.UserId)).ExecuteDeleteAsync();
         await _db.PushTokens.Where(t => userIds.Contains(t.UserId)).ExecuteDeleteAsync();
