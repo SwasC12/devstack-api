@@ -37,6 +37,9 @@ public class ShopsController : ControllerBase
         bool? ReceiptShowLogo = null);
     public record SetShopStatusRequest(bool IsActive);
     public record UpdateOwnerRequest(string? OwnerEmail, string? OwnerPhone);
+    public record EditShopRequest(string Name, string Code);
+    public record AddStaffRequest(string Username, string Password, string DisplayName, string Role, decimal? WageRate);
+    public record UpdateStaffRequest(string? DisplayName, string? Role, decimal? WageRate);
 
     // GET api/shops — superadmin: list all shops with lightweight usage stats.
     // Orders carry a global query filter, so cross-shop counting must opt out
@@ -59,7 +62,7 @@ public class ShopsController : ControllerBase
         // Now it's a handful of grouped queries stitched together in memory.
         var baseShops = await _db.Shops
             .OrderBy(s => s.Name)
-            .Select(s => new { s.Id, s.Name, s.Code, s.IsActive, s.CreatedAt, s.OwnerEmail, s.OwnerPhone })
+            .Select(s => new { s.Id, s.Name, s.Code, s.IsActive, s.IsArchived, s.CreatedAt, s.OwnerEmail, s.OwnerPhone })
             .ToListAsync();
 
         var userCounts = (await _db.Users
@@ -91,7 +94,7 @@ public class ShopsController : ControllerBase
             checkinMap.TryGetValue(s.Id, out var ci);
             return new
             {
-                s.Id, s.Name, s.Code, s.IsActive, s.CreatedAt, s.OwnerEmail, s.OwnerPhone,
+                s.Id, s.Name, s.Code, s.IsActive, s.IsArchived, s.CreatedAt, s.OwnerEmail, s.OwnerPhone,
                 UserCount = userCounts.TryGetValue(s.Id, out var uc) ? uc : 0,
                 OrderCount = o?.Count ?? 0,
                 Revenue = o?.Revenue ?? 0m,
@@ -315,6 +318,192 @@ public class ShopsController : ControllerBase
         await _db.SaveChangesAsync();
 
         return Ok(new { password, username = admin.Username, displayName = admin.DisplayName });
+    }
+
+    // PUT api/shops/{id} — superadmin: rename a shop / change its login code.
+    [Authorize(Roles = "superadmin")]
+    [HttpPut("{id:int}")]
+    public async Task<ActionResult> EditShop(int id, EditShopRequest request)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+
+        var name = request.Name?.Trim();
+        var code = request.Code?.Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(code))
+            return BadRequest(new { error = "Shop name and code are required." });
+        if (await _db.Shops.AnyAsync(s => s.Code == code && s.Id != id))
+            return BadRequest(new { error = $"A shop with code '{code}' already exists." });
+
+        var oldCode = shop.Code;
+        shop.Name = name;
+        shop.Code = code;
+        _db.PlatformEvents.Add(new PlatformEvent { Type = "shop_edited", ShopId = shop.Id, Detail = $"{shop.Name} — code {oldCode} → {code}", CreatedAtUtc = DateTime.UtcNow });
+        await _db.SaveChangesAsync();
+        return Ok(new { shop.Id, shop.Name, shop.Code, shop.IsActive, shop.IsArchived });
+    }
+
+    // POST api/shops/{id}/archive — superadmin: safe soft-delete. Hidden from the
+    // list and blocked from signing in (archived shops are also inactive), but no
+    // data is destroyed. Restorable.
+    [Authorize(Roles = "superadmin")]
+    [HttpPost("{id:int}/archive")]
+    public async Task<ActionResult> Archive(int id)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+        shop.IsArchived = true;
+        shop.IsActive = false;
+        _db.PlatformEvents.Add(new PlatformEvent { Type = "shop_archived", ShopId = shop.Id, Detail = $"{shop.Name} archived", CreatedAtUtc = DateTime.UtcNow });
+        await _db.SaveChangesAsync();
+        return Ok(new { shop.Id, shop.IsArchived, shop.IsActive });
+    }
+
+    [Authorize(Roles = "superadmin")]
+    [HttpPost("{id:int}/restore")]
+    public async Task<ActionResult> Restore(int id)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+        shop.IsArchived = false;
+        shop.IsActive = true;
+        _db.PlatformEvents.Add(new PlatformEvent { Type = "shop_restored", ShopId = shop.Id, Detail = $"{shop.Name} restored", CreatedAtUtc = DateTime.UtcNow });
+        await _db.SaveChangesAsync();
+        return Ok(new { shop.Id, shop.IsArchived, shop.IsActive });
+    }
+
+    // DELETE api/shops/{id} — superadmin: PERMANENTLY delete a shop. Only allowed
+    // for shops with NO sales history (test/abandoned shops), so real financial
+    // records can never be destroyed by accident — those must be archived instead.
+    [Authorize(Roles = "superadmin")]
+    [HttpDelete("{id:int}")]
+    public async Task<ActionResult> DeleteShop(int id)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+
+        if (await _db.Orders.IgnoreQueryFilters().AnyAsync(o => o.ShopId == id))
+            return BadRequest(new { error = "This shop has sales history and can't be deleted. Archive it instead." });
+
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        // Gather child-table parent ids first (these tables hang off MenuItem /
+        // ModifierGroup / PurchaseOrder, not ShopId directly). No orders exist,
+        // so all order-child tables are already empty and need no clearing.
+        var userIds = await _db.Users.IgnoreQueryFilters().Where(u => u.ShopId == id).Select(u => u.Id).ToListAsync();
+        var menuItemIds = await _db.MenuItems.IgnoreQueryFilters().Where(m => m.ShopId == id).Select(m => m.Id).ToListAsync();
+        var groupIds = await _db.ModifierGroups.Where(g => menuItemIds.Contains(g.MenuItemId)).Select(g => g.Id).ToListAsync();
+        var poIds = await _db.PurchaseOrders.IgnoreQueryFilters().Where(p => p.ShopId == id).Select(p => p.Id).ToListAsync();
+
+        await _db.RefreshTokens.Where(t => userIds.Contains(t.UserId)).ExecuteDeleteAsync();
+        await _db.PushTokens.Where(t => userIds.Contains(t.UserId)).ExecuteDeleteAsync();
+        await _db.Notifications.Where(n => n.ShopId == id).ExecuteDeleteAsync();
+        await _db.Modifiers.Where(m => groupIds.Contains(m.ModifierGroupId)).ExecuteDeleteAsync();
+        await _db.ModifierGroups.Where(g => menuItemIds.Contains(g.MenuItemId)).ExecuteDeleteAsync();
+        await _db.MenuSizes.Where(s => menuItemIds.Contains(s.MenuItemId)).ExecuteDeleteAsync();
+        await _db.RecipeLines.Where(r => menuItemIds.Contains(r.MenuItemId)).ExecuteDeleteAsync();
+        await _db.PurchaseOrderLines.Where(l => poIds.Contains(l.PurchaseOrderId)).ExecuteDeleteAsync();
+        await _db.MenuItems.IgnoreQueryFilters().Where(m => m.ShopId == id).ExecuteDeleteAsync();
+        await _db.Categories.IgnoreQueryFilters().Where(c => c.ShopId == id).ExecuteDeleteAsync();
+        await _db.Discounts.IgnoreQueryFilters().Where(d => d.ShopId == id).ExecuteDeleteAsync();
+        await _db.Customers.IgnoreQueryFilters().Where(c => c.ShopId == id).ExecuteDeleteAsync();
+        await _db.Expenses.IgnoreQueryFilters().Where(e => e.ShopId == id).ExecuteDeleteAsync();
+        await _db.PurchaseOrders.IgnoreQueryFilters().Where(p => p.ShopId == id).ExecuteDeleteAsync();
+        await _db.Suppliers.IgnoreQueryFilters().Where(s => s.ShopId == id).ExecuteDeleteAsync();
+        await _db.Shifts.IgnoreQueryFilters().Where(s => s.ShopId == id).ExecuteDeleteAsync();
+        await _db.AuditLog.IgnoreQueryFilters().Where(a => a.ShopId == id).ExecuteDeleteAsync();
+        await _db.AppCheckins.Where(c => c.ShopId == id).ExecuteDeleteAsync();
+        await _db.Users.IgnoreQueryFilters().Where(u => u.ShopId == id).ExecuteDeleteAsync();
+        var name = shop.Name;
+        _db.Shops.Remove(shop);
+        await _db.SaveChangesAsync();
+        _db.PlatformEvents.Add(new PlatformEvent { Type = "shop_deleted", ShopId = null, Detail = $"{name} ({shop.Code}) permanently deleted", CreatedAtUtc = DateTime.UtcNow });
+        await _db.SaveChangesAsync();
+        await tx.CommitAsync();
+        return Ok(new { deleted = true });
+    }
+
+    // ── Staff management for ANY shop (superadmin) ────────────────────────────
+    private static readonly string[] StaffRoles = { "admin", "manager", "cashier" };
+
+    [Authorize(Roles = "superadmin")]
+    [HttpPost("{id:int}/users")]
+    public async Task<ActionResult> AddStaff(int id, AddStaffRequest request)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+
+        var username = request.Username?.Trim();
+        var displayName = request.DisplayName?.Trim();
+        var role = request.Role?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(displayName))
+            return BadRequest(new { error = "Username and display name are required." });
+        if (!StaffRoles.Contains(role)) return BadRequest(new { error = "Role must be admin, manager or cashier." });
+        var policyError = PasswordPolicy.Validate(request.Password);
+        if (policyError is not null) return BadRequest(new { error = policyError });
+        if (await _db.Users.IgnoreQueryFilters().AnyAsync(u => u.ShopId == id && u.Username == username))
+            return BadRequest(new { error = $"'{username}' already exists in this shop." });
+
+        var user = new AppUser
+        {
+            Username = username,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
+            DisplayName = displayName,
+            Role = role!,
+            ShopId = id,
+            WageRate = request.WageRate
+        };
+        _db.Users.Add(user);
+        await _db.SaveChangesAsync();
+        return Ok(new { user.Id, user.Username, user.DisplayName, user.Role, user.WageRate });
+    }
+
+    [Authorize(Roles = "superadmin")]
+    [HttpPut("{id:int}/users/{userId:int}")]
+    public async Task<ActionResult> UpdateStaff(int id, int userId, UpdateStaffRequest request)
+    {
+        var user = await _db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId && u.ShopId == id);
+        if (user is null) return NotFound();
+        if (!string.IsNullOrWhiteSpace(request.DisplayName)) user.DisplayName = request.DisplayName.Trim();
+        if (!string.IsNullOrWhiteSpace(request.Role))
+        {
+            var role = request.Role.Trim().ToLowerInvariant();
+            if (!StaffRoles.Contains(role)) return BadRequest(new { error = "Invalid role." });
+            user.Role = role;
+        }
+        if (request.WageRate.HasValue) user.WageRate = request.WageRate.Value < 0 ? null : request.WageRate.Value;
+        await _db.SaveChangesAsync();
+        return Ok(new { user.Id, user.Username, user.DisplayName, user.Role, user.WageRate });
+    }
+
+    [Authorize(Roles = "superadmin")]
+    [HttpPost("{id:int}/users/{userId:int}/reset-password")]
+    public async Task<ActionResult> ResetStaffPassword(int id, int userId)
+    {
+        var user = await _db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId && u.ShopId == id);
+        if (user is null) return NotFound();
+        var password = GeneratePassword();
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+        await _db.SaveChangesAsync();
+        return Ok(new { password, username = user.Username, displayName = user.DisplayName });
+    }
+
+    [Authorize(Roles = "superadmin")]
+    [HttpDelete("{id:int}/users/{userId:int}")]
+    public async Task<ActionResult> DeleteStaff(int id, int userId)
+    {
+        var user = await _db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId && u.ShopId == id);
+        if (user is null) return NotFound();
+        // Never leave a shop with no admin.
+        if (user.Role == "admin")
+        {
+            var adminCount = await _db.Users.IgnoreQueryFilters().CountAsync(u => u.ShopId == id && u.Role == "admin");
+            if (adminCount <= 1) return BadRequest(new { error = "Can't remove the shop's only admin." });
+        }
+        await _db.RefreshTokens.Where(t => t.UserId == userId).ExecuteDeleteAsync();
+        await _db.PushTokens.Where(t => t.UserId == userId).ExecuteDeleteAsync();
+        _db.Users.Remove(user);
+        await _db.SaveChangesAsync();
+        return Ok(new { deleted = true });
     }
 
     // Random 18-char password, same rules as the platform's one-time seeds.

@@ -18,6 +18,7 @@ public class Shop
     public string? OwnerPhone { get; set; } // platform contact info (superadmin-maintained)
     public string? KitchenUrl { get; set; } // LAN webhook target for the kitchen display (e.g. http://192.168.1.50:8123)
     public bool IsActive { get; set; } = true; // suspended shops can't sign in (platform lifecycle)
+    public bool IsArchived { get; set; } = false; // archived = hidden from the platform list + can't sign in (safe soft-delete)
     public DateTime CreatedAt { get; set; }
 
     // ── Loyalty (stamp card) ──────────────────────────────────────────────
