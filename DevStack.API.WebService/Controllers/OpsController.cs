@@ -96,9 +96,17 @@ public class OpsController : ControllerBase
         {
             var batch = orphans.Skip(i).Take(100).ToList();
             var qs = string.Join("&", batch.Select(p => "public_ids[]=" + Uri.EscapeDataString(p)));
-            using var req = new HttpRequestMessage(HttpMethod.Delete, $"https://api.cloudinary.com/v1_1/{cloud}/resources/image?{qs}");
+            // Admin bulk-delete path includes resource_type/type: /resources/image/upload
+            using var req = new HttpRequestMessage(HttpMethod.Delete, $"https://api.cloudinary.com/v1_1/{cloud}/resources/image/upload?{qs}");
             using var resp = await http.SendAsync(req);
-            if (resp.IsSuccessStatusCode) deleted += batch.Count;
+            if (resp.IsSuccessStatusCode)
+            {
+                // Response has a "deleted" map { public_id: "deleted"|"not_found" }.
+                using var d = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                if (d.RootElement.TryGetProperty("deleted", out var del))
+                    foreach (var kv in del.EnumerateObject())
+                        if (kv.Value.GetString() == "deleted") deleted++;
+            }
         }
         return Ok(new { dryRun = false, orphanCount = orphans.Count, deleted });
     }
