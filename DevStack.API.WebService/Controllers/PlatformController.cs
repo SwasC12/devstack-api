@@ -41,7 +41,11 @@ public class PlatformController : ControllerBase
             ordersToday = await _db.Orders.IgnoreQueryFilters().CountAsync(o => o.CreatedAt >= today && o.VoidedAt == null),
             notificationsSent30d = await _db.Notifications.CountAsync(n => n.CreatedAtUtc >= since30d),
             passwordResets30d = await _db.PlatformEvents.CountAsync(e => e.Type == "password_reset" && e.CreatedAtUtc >= since30d),
-            pushFailures30d = await _db.PlatformEvents.CountAsync(e => e.Type == "push_failed" && e.CreatedAtUtc >= since30d)
+            pushFailures30d = await _db.PlatformEvents.CountAsync(e => e.Type == "push_failed" && e.CreatedAtUtc >= since30d),
+            // Billing rollup — recurring revenue to the platform owner.
+            mrr = await _db.Shops.Where(s => s.BillingStatus == "active").SumAsync(s => (decimal?)s.MonthlyPrice) ?? 0m,
+            trialShops = await _db.Shops.CountAsync(s => s.BillingStatus == "trial"),
+            overdueShops = await _db.Shops.CountAsync(s => s.BillingStatus == "overdue")
         };
 
         var events = await _db.PlatformEvents

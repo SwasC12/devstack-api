@@ -19,6 +19,14 @@ public class Shop
     public string? KitchenUrl { get; set; } // LAN webhook target for the kitchen display (e.g. http://192.168.1.50:8123)
     public bool IsActive { get; set; } = true; // suspended shops can't sign in (platform lifecycle)
     public bool IsArchived { get; set; } = false; // archived = hidden from the platform list + can't sign in (safe soft-delete)
+
+    // ── Billing / subscription (what the shop pays the platform owner) ────────
+    public string BillingPlan { get; set; } = "Trial";      // Trial | Basic | Pro | ... (free text)
+    public decimal MonthlyPrice { get; set; } = 0m;          // ZAR the shop pays per month
+    public string BillingStatus { get; set; } = "trial";     // trial | active | overdue | cancelled
+    public DateTime? TrialEndsAt { get; set; }
+    public DateTime? NextBillingAt { get; set; }
+    public string? BillingNotes { get; set; }
     public DateTime CreatedAt { get; set; }
 
     // ── Loyalty (stamp card) ──────────────────────────────────────────────

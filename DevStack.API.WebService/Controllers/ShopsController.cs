@@ -1,9 +1,12 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Text;
 using DevStack.API.DataAccess;
 using DevStack.API.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 
 namespace DevStack.API.WebService.Controllers;
 
@@ -18,11 +21,13 @@ public class ShopsController : ControllerBase
 {
     private readonly DevStackDataModel _db;
     private readonly EmailService _email;
+    private readonly IConfiguration _config;
 
-    public ShopsController(DevStackDataModel db, EmailService email)
+    public ShopsController(DevStackDataModel db, EmailService email, IConfiguration config)
     {
         _db = db;
         _email = email;
+        _config = config;
     }
 
     public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName, string? OwnerEmail = null);
@@ -40,6 +45,7 @@ public class ShopsController : ControllerBase
     public record EditShopRequest(string Name, string Code);
     public record AddStaffRequest(string Username, string Password, string DisplayName, string Role, decimal? WageRate);
     public record UpdateStaffRequest(string? DisplayName, string? Role, decimal? WageRate);
+    public record UpdateBillingRequest(string? BillingPlan, decimal? MonthlyPrice, string? BillingStatus, DateTime? TrialEndsAt, DateTime? NextBillingAt, string? BillingNotes);
 
     // GET api/shops — superadmin: list all shops with lightweight usage stats.
     // Orders carry a global query filter, so cross-shop counting must opt out
@@ -62,7 +68,8 @@ public class ShopsController : ControllerBase
         // Now it's a handful of grouped queries stitched together in memory.
         var baseShops = await _db.Shops
             .OrderBy(s => s.Name)
-            .Select(s => new { s.Id, s.Name, s.Code, s.IsActive, s.IsArchived, s.CreatedAt, s.OwnerEmail, s.OwnerPhone })
+            .Select(s => new { s.Id, s.Name, s.Code, s.IsActive, s.IsArchived, s.CreatedAt, s.OwnerEmail, s.OwnerPhone,
+                s.BillingPlan, s.MonthlyPrice, s.BillingStatus, s.TrialEndsAt, s.NextBillingAt })
             .ToListAsync();
 
         var userCounts = (await _db.Users
@@ -95,6 +102,7 @@ public class ShopsController : ControllerBase
             return new
             {
                 s.Id, s.Name, s.Code, s.IsActive, s.IsArchived, s.CreatedAt, s.OwnerEmail, s.OwnerPhone,
+                s.BillingPlan, s.MonthlyPrice, s.BillingStatus, s.TrialEndsAt, s.NextBillingAt,
                 UserCount = userCounts.TryGetValue(s.Id, out var uc) ? uc : 0,
                 OrderCount = o?.Count ?? 0,
                 Revenue = o?.Revenue ?? 0m,
@@ -145,7 +153,8 @@ public class ShopsController : ControllerBase
 
         return Ok(new
         {
-            shop = new { shop.Id, shop.Name, shop.Code, shop.IsActive, shop.CreatedAt, shop.OwnerEmail, shop.OwnerPhone },
+            shop = new { shop.Id, shop.Name, shop.Code, shop.IsActive, shop.IsArchived, shop.CreatedAt, shop.OwnerEmail, shop.OwnerPhone,
+                shop.BillingPlan, shop.MonthlyPrice, shop.BillingStatus, shop.TrialEndsAt, shop.NextBillingAt, shop.BillingNotes },
             stats = new
             {
                 orderCount,
@@ -420,6 +429,77 @@ public class ShopsController : ControllerBase
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
         return Ok(new { deleted = true });
+    }
+
+    // PUT api/shops/{id}/billing — superadmin: the shop's subscription/billing.
+    [Authorize(Roles = "superadmin")]
+    [HttpPut("{id:int}/billing")]
+    public async Task<ActionResult> UpdateBilling(int id, UpdateBillingRequest request)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+
+        if (request.BillingPlan != null) shop.BillingPlan = request.BillingPlan.Trim();
+        if (request.MonthlyPrice.HasValue) shop.MonthlyPrice = Math.Max(0, request.MonthlyPrice.Value);
+        if (request.BillingStatus != null)
+        {
+            var st = request.BillingStatus.Trim().ToLowerInvariant();
+            if (st is "trial" or "active" or "overdue" or "cancelled") shop.BillingStatus = st;
+        }
+        if (request.TrialEndsAt.HasValue) shop.TrialEndsAt = request.TrialEndsAt;
+        if (request.NextBillingAt.HasValue) shop.NextBillingAt = request.NextBillingAt;
+        if (request.BillingNotes != null) shop.BillingNotes = string.IsNullOrWhiteSpace(request.BillingNotes) ? null : request.BillingNotes.Trim();
+        await _db.SaveChangesAsync();
+        return Ok(new { shop.Id, shop.BillingPlan, shop.MonthlyPrice, shop.BillingStatus, shop.TrialEndsAt, shop.NextBillingAt, shop.BillingNotes });
+    }
+
+    // POST api/shops/{id}/impersonate — superadmin: get a short-lived access
+    // token that signs in AS this shop's admin, so the platform owner can view
+    // and configure the shop (support / troubleshooting). No refresh token is
+    // issued, so the session simply expires; the action is audit-logged.
+    [Authorize(Roles = "superadmin")]
+    [HttpPost("{id:int}/impersonate")]
+    public async Task<ActionResult> Impersonate(int id)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+
+        var admin = await _db.Users.IgnoreQueryFilters()
+            .Where(u => u.ShopId == id && u.Role == "admin")
+            .OrderBy(u => u.Id)
+            .FirstOrDefaultAsync();
+        if (admin is null) return BadRequest(new { error = "This shop has no admin account to view as." });
+
+        var superName = User.FindFirstValue(ClaimTypes.Name) ?? "superadmin";
+        _db.PlatformEvents.Add(new PlatformEvent { Type = "impersonate", ShopId = id, Detail = $"{superName} viewed as {shop.Name} ({admin.Username})", CreatedAtUtc = DateTime.UtcNow });
+        await _db.SaveChangesAsync();
+
+        var token = BuildImpersonationToken(admin, shop);
+        return Ok(new { token, username = admin.Username, displayName = admin.DisplayName, shopId = id, shopName = shop.Name, shopCode = shop.Code });
+    }
+
+    // Access token that authenticates as the shop admin, tagged imp=1 so the
+    // client knows it's an impersonation session (and never tries to refresh it).
+    private string BuildImpersonationToken(AppUser admin, Shop shop)
+    {
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:Key"]!));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.Name, admin.Username),
+            new(ClaimTypes.Role, admin.Role),
+            new("userId", admin.Id.ToString()),
+            new("shopId", shop.Id.ToString()),
+            new("shopName", shop.Name),
+            new("imp", "1")
+        };
+        var token = new JwtSecurityToken(
+            issuer: _config["Jwt:Issuer"],
+            audience: _config["Jwt:Audience"],
+            claims: claims,
+            expires: DateTime.UtcNow.AddMinutes(60),
+            signingCredentials: creds);
+        return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
     // ── Staff management for ANY shop (superadmin) ────────────────────────────
