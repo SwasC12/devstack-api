@@ -33,19 +33,30 @@ public class PlatformController : ControllerBase
         var today = now.Date;
         var since30d = DateTime.UtcNow.AddDays(-30);
 
+        // Load the (small) Shops table ONCE and derive all shop/billing counters
+        // in memory — was 6 separate round trips.
+        var shops = await _db.Shops.AsNoTracking()
+            .Select(s => new { s.IsActive, s.BillingStatus, s.MonthlyPrice }).ToListAsync();
+
+        // Both PlatformEvent counters in ONE query instead of two.
+        var eventCounts = (await _db.PlatformEvents
+            .Where(e => e.CreatedAtUtc >= since30d && (e.Type == "password_reset" || e.Type == "push_failed"))
+            .GroupBy(e => e.Type).Select(g => new { g.Key, Count = g.Count() }).ToListAsync())
+            .ToDictionary(x => x.Key, x => x.Count);
+
         var stats = new
         {
-            totalShops = await _db.Shops.CountAsync(),
-            activeShops = await _db.Shops.CountAsync(s => s.IsActive),
-            suspendedShops = await _db.Shops.CountAsync(s => !s.IsActive),
+            totalShops = shops.Count,
+            activeShops = shops.Count(s => s.IsActive),
+            suspendedShops = shops.Count(s => !s.IsActive),
             ordersToday = await _db.Orders.IgnoreQueryFilters().CountAsync(o => o.CreatedAt >= today && o.VoidedAt == null),
             notificationsSent30d = await _db.Notifications.CountAsync(n => n.CreatedAtUtc >= since30d),
-            passwordResets30d = await _db.PlatformEvents.CountAsync(e => e.Type == "password_reset" && e.CreatedAtUtc >= since30d),
-            pushFailures30d = await _db.PlatformEvents.CountAsync(e => e.Type == "push_failed" && e.CreatedAtUtc >= since30d),
+            passwordResets30d = eventCounts.TryGetValue("password_reset", out var pr) ? pr : 0,
+            pushFailures30d = eventCounts.TryGetValue("push_failed", out var pf) ? pf : 0,
             // Billing rollup — recurring revenue to the platform owner.
-            mrr = await _db.Shops.Where(s => s.BillingStatus == "active").SumAsync(s => (decimal?)s.MonthlyPrice) ?? 0m,
-            trialShops = await _db.Shops.CountAsync(s => s.BillingStatus == "trial"),
-            overdueShops = await _db.Shops.CountAsync(s => s.BillingStatus == "overdue")
+            mrr = shops.Where(s => s.BillingStatus == "active").Sum(s => s.MonthlyPrice),
+            trialShops = shops.Count(s => s.BillingStatus == "trial"),
+            overdueShops = shops.Count(s => s.BillingStatus == "overdue")
         };
 
         var events = await _db.PlatformEvents
