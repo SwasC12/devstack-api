@@ -54,41 +54,53 @@ public class ShopsController : ControllerBase
             .Select(r => r.Version)
             .FirstOrDefaultAsync();
 
-        var shops = await _db.Shops
+        // Set-based aggregates instead of per-shop correlated subqueries: this
+        // used to run 6 subqueries FOR EACH shop row (the slow platform page).
+        // Now it's a handful of grouped queries stitched together in memory.
+        var baseShops = await _db.Shops
             .OrderBy(s => s.Name)
-            .Select(s => new
-            {
-                s.Id,
-                s.Name,
-                s.Code,
-                s.IsActive,
-                s.CreatedAt,
-                s.OwnerEmail,
-                s.OwnerPhone,
-                UserCount = _db.Users.Count(u => u.ShopId == s.Id),
-                OrderCount = _db.Orders.IgnoreQueryFilters().Count(o => o.ShopId == s.Id),
-                // Lifetime revenue (excludes voided) — feeds the richer table.
-                Revenue = _db.Orders.IgnoreQueryFilters()
-                    .Where(o => o.ShopId == s.Id && o.VoidedAt == null)
-                    .Sum(o => (decimal?)o.Total) ?? 0m,
-                LastOrderAt = _db.Orders.IgnoreQueryFilters()
-                    .Where(o => o.ShopId == s.Id)
-                    .OrderByDescending(o => o.CreatedAt)
-                    .Select(o => (DateTime?)o.CreatedAt)
-                    .FirstOrDefault(),
-                // Installed app version + last check-in (from AppCheckins).
-                AppVersion = _db.AppCheckins
-                    .Where(c => c.ShopId == s.Id)
-                    .OrderByDescending(c => c.LastSeenAtUtc)
-                    .Select(c => c.Version)
-                    .FirstOrDefault(),
-                LastSeenAt = _db.AppCheckins
-                    .Where(c => c.ShopId == s.Id)
-                    .OrderByDescending(c => c.LastSeenAtUtc)
-                    .Select(c => (DateTime?)c.LastSeenAtUtc)
-                    .FirstOrDefault()
-            })
+            .Select(s => new { s.Id, s.Name, s.Code, s.IsActive, s.CreatedAt, s.OwnerEmail, s.OwnerPhone })
             .ToListAsync();
+
+        var userCounts = (await _db.Users
+            .GroupBy(u => u.ShopId)
+            .Select(g => new { ShopId = g.Key, Count = g.Count() })
+            .ToListAsync())
+            .ToDictionary(x => x.ShopId, x => x.Count);
+
+        var orderAgg = (await _db.Orders.IgnoreQueryFilters()
+            .GroupBy(o => o.ShopId)
+            .Select(g => new
+            {
+                ShopId = g.Key,
+                Count = g.Count(),
+                Revenue = g.Sum(o => o.VoidedAt == null ? o.Total : 0m),
+                LastOrderAt = (DateTime?)g.Max(o => o.CreatedAt)
+            })
+            .ToListAsync())
+            .ToDictionary(x => x.ShopId);
+
+        // One check-in row per shop in practice; group + take latest defensively.
+        var checkinMap = (await _db.AppCheckins.AsNoTracking().ToListAsync())
+            .GroupBy(c => c.ShopId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.LastSeenAtUtc).First());
+
+        var shops = baseShops.Select(s =>
+        {
+            orderAgg.TryGetValue(s.Id, out var o);
+            checkinMap.TryGetValue(s.Id, out var ci);
+            return new
+            {
+                s.Id, s.Name, s.Code, s.IsActive, s.CreatedAt, s.OwnerEmail, s.OwnerPhone,
+                UserCount = userCounts.TryGetValue(s.Id, out var uc) ? uc : 0,
+                OrderCount = o?.Count ?? 0,
+                Revenue = o?.Revenue ?? 0m,
+                LastOrderAt = o?.LastOrderAt,
+                AppVersion = ci?.Version,
+                LastSeenAt = (DateTime?)(ci?.LastSeenAtUtc)
+            };
+        }).ToList();
+
         return Ok(new { currentVersion, shops });
     }
 
