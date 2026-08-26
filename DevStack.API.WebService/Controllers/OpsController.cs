@@ -52,7 +52,8 @@ public class OpsController : ControllerBase
         r["ordersToday"] = await Time(async () => await _db.Orders.IgnoreQueryFilters().CountAsync(o => o.CreatedAt >= today && o.VoidedAt == null));
         r["notifications30d"] = await Time(async () => await _db.Notifications.CountAsync(n => n.CreatedAtUtc >= since30d));
         r["eventsTop10"] = await Time(async () => await _db.PlatformEvents.OrderByDescending(e => e.CreatedAtUtc).Take(10).Select(e => e.Id).ToListAsync());
-        r["currentRelease"] = await Time(async () => await _db.AppReleases.Where(x => x.IsCurrent).OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync());
+        r["currentReleaseFULL_old"] = await Time(async () => await _db.AppReleases.Where(x => x.IsCurrent).OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync());
+        r["currentVersion_fixed"] = await Time(async () => await _db.AppReleases.Where(x => x.IsCurrent).OrderByDescending(x => x.CreatedAtUtc).Select(x => x.Version).FirstOrDefaultAsync());
         r["checkins"] = await Time(async () => await _db.AppCheckins.ToListAsync());
         r["rowcounts"] = new
         {
