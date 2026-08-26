@@ -30,7 +30,9 @@ public class ShopsController : ControllerBase
         _config = config;
     }
 
-    public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName, string? OwnerEmail = null);
+    // BrandId assigns to an existing brand; NewBrandName creates one; if neither,
+    // the shop becomes its own one-shop brand.
+    public record CreateShopRequest(string Name, string Code, string AdminUsername, string AdminPassword, string AdminDisplayName, string? OwnerEmail = null, int? BrandId = null, string? NewBrandName = null);
     // New fields are nullable so a partial update (e.g. the POS saving only
     // branding) never silently resets loyalty / receipt settings — only fields
     // actually sent are applied.
@@ -196,7 +198,23 @@ public class ShopsController : ControllerBase
         if (await _db.Shops.AnyAsync(s => s.Code == code))
             return BadRequest(new { error = $"A shop with code '{code}' already exists." });
 
-        var shop = new Shop { Name = name, Code = code, CreatedAt = DateTime.UtcNow.AddHours(2), JoinToken = await GenerateUniqueJoinTokenAsync() };
+        // Resolve the brand: existing, newly-named, or a fresh one-shop brand.
+        Brand brand;
+        if (request.BrandId is int bid)
+        {
+            var found = await _db.Brands.FindAsync(bid);
+            if (found is null) return BadRequest(new { error = "That brand doesn't exist." });
+            brand = found;
+        }
+        else
+        {
+            var brandName = string.IsNullOrWhiteSpace(request.NewBrandName) ? name : request.NewBrandName.Trim();
+            brand = new Brand { Name = brandName, JoinToken = await GenerateUniqueBrandTokenAsync(), CreatedAt = DateTime.UtcNow.AddHours(2) };
+            _db.Brands.Add(brand);
+            await _db.SaveChangesAsync();
+        }
+
+        var shop = new Shop { Name = name, Code = code, CreatedAt = DateTime.UtcNow.AddHours(2), JoinToken = await GenerateUniqueJoinTokenAsync(), BrandId = brand.Id };
         _db.Shops.Add(shop);
         await _db.SaveChangesAsync();
 
