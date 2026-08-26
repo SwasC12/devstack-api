@@ -80,6 +80,24 @@ public class BrandsController : ControllerBase
         return Ok(new { brand.Id, brand.Name, brand.JoinToken, brand.LoyaltyEnabled, brand.LoyaltyStampsRequired, brand.LoyaltyReward, brand.LogoUrl });
     }
 
+    // DELETE api/brands/{id} — remove a brand that has NO shops assigned (e.g.
+    // left behind after its shops were deleted). Also clears the brand's loyalty
+    // members, which are dead data once no shop uses the brand.
+    [HttpDelete("{id:int}")]
+    public async Task<ActionResult> Delete(int id)
+    {
+        var brand = await _db.Brands.FindAsync(id);
+        if (brand is null) return NotFound();
+
+        if (await _db.Shops.AnyAsync(s => s.BrandId == id))
+            return BadRequest(new { error = "This brand still has shops. Move or delete those shops first." });
+
+        await _db.LoyaltyMembers.Where(m => m.BrandId == id).ExecuteDeleteAsync();
+        _db.Brands.Remove(brand);
+        await _db.SaveChangesAsync();
+        return Ok(new { deleted = true });
+    }
+
     // POST api/brands/{id}/regenerate-token — rotate the public join token.
     [HttpPost("{id:int}/regenerate-token")]
     public async Task<ActionResult> RegenerateToken(int id)
