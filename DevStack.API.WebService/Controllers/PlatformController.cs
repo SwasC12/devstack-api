@@ -66,12 +66,14 @@ public class PlatformController : ControllerBase
             .ToListAsync();
 
         // App-update status: current release vs what shops checked in with.
-        var currentRelease = await _db.AppReleases
+        // Project to Version ONLY — loading the full entity drags the APK binary
+        // blob out of the DB (tens of MB), which made the overview take ~12s.
+        var currentVersion = await _db.AppReleases
             .Where(r => r.IsCurrent)
             .OrderByDescending(r => r.CreatedAtUtc)
+            .Select(r => r.Version)
             .FirstOrDefaultAsync();
         var checkins = await _db.AppCheckins.ToListAsync();
-        var currentVersion = currentRelease?.Version;
         var shopsUpdated = currentVersion is null ? 0 : checkins.Count(c => c.Version == currentVersion);
 
         var update = new
