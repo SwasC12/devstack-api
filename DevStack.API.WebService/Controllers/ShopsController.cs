@@ -69,8 +69,11 @@ public class ShopsController : ControllerBase
         var baseShops = await _db.Shops
             .OrderBy(s => s.Name)
             .Select(s => new { s.Id, s.Name, s.Code, s.IsActive, s.IsArchived, s.CreatedAt, s.OwnerEmail, s.OwnerPhone,
-                s.BillingPlan, s.MonthlyPrice, s.BillingStatus, s.TrialEndsAt, s.NextBillingAt })
+                s.BillingPlan, s.MonthlyPrice, s.BillingStatus, s.TrialEndsAt, s.NextBillingAt, s.BrandId })
             .ToListAsync();
+
+        var brandNames = await _db.Brands.Select(b => new { b.Id, b.Name }).ToListAsync();
+        var brandMap = brandNames.ToDictionary(b => b.Id, b => b.Name);
 
         var userCounts = (await _db.Users
             .GroupBy(u => u.ShopId)
@@ -103,6 +106,7 @@ public class ShopsController : ControllerBase
             {
                 s.Id, s.Name, s.Code, s.IsActive, s.IsArchived, s.CreatedAt, s.OwnerEmail, s.OwnerPhone,
                 s.BillingPlan, s.MonthlyPrice, s.BillingStatus, s.TrialEndsAt, s.NextBillingAt,
+                s.BrandId, BrandName = s.BrandId != null && brandMap.ContainsKey(s.BrandId.Value) ? brandMap[s.BrandId.Value] : null,
                 UserCount = userCounts.TryGetValue(s.Id, out var uc) ? uc : 0,
                 OrderCount = o?.Count ?? 0,
                 Revenue = o?.Revenue ?? 0m,
@@ -502,6 +506,26 @@ public class ShopsController : ControllerBase
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
+    public record AssignBrandRequest(int BrandId);
+
+    // PUT api/shops/{id}/brand — superadmin: move a shop into a brand (franchise).
+    // The shop's staff/menu/orders are untouched; only which loyalty programme it
+    // participates in changes.
+    [Authorize(Roles = "superadmin")]
+    [HttpPut("{id:int}/brand")]
+    public async Task<ActionResult> AssignBrand(int id, AssignBrandRequest request)
+    {
+        var shop = await _db.Shops.FindAsync(id);
+        if (shop is null) return NotFound();
+        var brand = await _db.Brands.FindAsync(request.BrandId);
+        if (brand is null) return BadRequest(new { error = "That brand doesn't exist." });
+
+        shop.BrandId = brand.Id;
+        _db.PlatformEvents.Add(new PlatformEvent { Type = "shop_brand_changed", ShopId = shop.Id, Detail = $"{shop.Name} → brand {brand.Name}", CreatedAtUtc = DateTime.UtcNow });
+        await _db.SaveChangesAsync();
+        return Ok(new { shop.Id, shop.BrandId, brandName = brand.Name });
+    }
+
     // ── Staff management for ANY shop (superadmin) ────────────────────────────
     private static readonly string[] StaffRoles = { "admin", "manager", "cashier" };
 
@@ -596,8 +620,9 @@ public class ShopsController : ControllerBase
         return sb.ToString();
     }
 
-    // GET api/shops/me — any logged-in shop user: the current shop's branding.
-    // The POS calls this so cashiers see the owner's logo too.
+    // GET api/shops/me — any logged-in shop user: the shop's branding + its
+    // BRAND's loyalty programme (rules + public join token). The POS calls this
+    // so cashiers see the logo and the correct loyalty rules.
     [Authorize]
     [HttpGet("me")]
     public async Task<ActionResult> GetMe()
@@ -608,19 +633,12 @@ public class ShopsController : ControllerBase
         var shop = await _db.Shops.FindAsync(shopId);
         if (shop is null) return NotFound();
 
-        // Backfill: shops created before join tokens existed get one on first load.
-        if (string.IsNullOrEmpty(shop.JoinToken))
-        {
-            shop.JoinToken = await GenerateUniqueJoinTokenAsync();
-            await _db.SaveChangesAsync();
-        }
-
-        return Ok(ShopMe(shop));
+        var brand = await EnsureBrandAsync(shop);
+        return Ok(ShopMe(shop, brand));
     }
 
-    // POST api/shops/me/regenerate-join-token — shop admin: rotate the public
-    // loyalty join token. Any previously printed sign-up QR / poster stops
-    // working immediately, so this is the fix if one leaks or is misused.
+    // POST api/shops/me/regenerate-join-token — shop admin: rotate the BRAND's
+    // public loyalty join token. Any previously printed sign-up QR stops working.
     [Authorize(Roles = "admin")]
     [HttpPost("me/regenerate-join-token")]
     public async Task<ActionResult> RegenerateJoinToken()
@@ -630,15 +648,59 @@ public class ShopsController : ControllerBase
 
         var shop = await _db.Shops.FindAsync(shopId);
         if (shop is null) return NotFound();
+        var brand = await EnsureBrandAsync(shop);
 
-        shop.JoinToken = await GenerateUniqueJoinTokenAsync();
+        brand.JoinToken = await GenerateUniqueBrandTokenAsync();
         await _db.SaveChangesAsync();
-        return Ok(ShopMe(shop));
+        return Ok(ShopMe(shop, brand));
     }
 
-    // Unguessable, QR-friendly join token (no ambiguous chars). 12 chars over a
-    // 31-symbol alphabet ≈ 59 bits — not feasible to enumerate. Retries on the
-    // (astronomically rare) collision against the unique index.
+    // Ensure a shop is linked to a brand (safety net for shops created before the
+    // brand model, or between deploys). Reuses the shop's existing join token when
+    // free so any printed QR keeps working; copies the shop's loyalty config.
+    private async Task<Brand> EnsureBrandAsync(Shop shop)
+    {
+        if (shop.BrandId is int bid)
+        {
+            var existing = await _db.Brands.FindAsync(bid);
+            if (existing is not null) return existing;
+        }
+        var reuseToken = !string.IsNullOrEmpty(shop.JoinToken)
+            && !await _db.Brands.AnyAsync(b => b.JoinToken == shop.JoinToken);
+        var brand = new Brand
+        {
+            Name = shop.Name,
+            JoinToken = reuseToken ? shop.JoinToken : await GenerateUniqueBrandTokenAsync(),
+            LoyaltyEnabled = shop.LoyaltyEnabled,
+            LoyaltyStampsRequired = shop.LoyaltyStampsRequired,
+            LoyaltyReward = shop.LoyaltyReward,
+            LogoUrl = shop.LogoUrl,
+            CreatedAt = DateTime.UtcNow.AddHours(2)
+        };
+        _db.Brands.Add(brand);
+        await _db.SaveChangesAsync();
+        shop.BrandId = brand.Id;
+        await _db.SaveChangesAsync();
+        return brand;
+    }
+
+    // Unguessable, QR-friendly join token (no ambiguous chars), unique among brands.
+    private async Task<string> GenerateUniqueBrandTokenAsync()
+    {
+        const string alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(12);
+            var sb = new System.Text.StringBuilder(12);
+            foreach (var b in bytes) sb.Append(alphabet[b % alphabet.Length]);
+            var candidate = sb.ToString();
+            if (!await _db.Brands.AnyAsync(b => b.JoinToken == candidate))
+                return candidate;
+        }
+        return "B" + DateTime.UtcNow.Ticks.ToString("X");
+    }
+
+    // Kept for shop creation (shop still has its own token column, now vestigial).
     private async Task<string> GenerateUniqueJoinTokenAsync()
     {
         const string alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -654,8 +716,8 @@ public class ShopsController : ControllerBase
         return "J" + DateTime.UtcNow.Ticks.ToString("X");
     }
 
-    // PUT api/shops/me - shop admin (owner): update the current shop's branding,
-    // loyalty and receipt settings.
+    // PUT api/shops/me - shop admin (owner): update the shop's branding + receipt.
+    // Loyalty rules are now BRAND-level (superadmin-managed) and ignored here.
     [Authorize(Roles = "admin")]
     [HttpPut("me")]
     public async Task<ActionResult> UpdateMe(UpdateShopRequest request)
@@ -675,15 +737,6 @@ public class ShopsController : ControllerBase
         shop.ReceiptQrUrl = string.IsNullOrWhiteSpace(request.ReceiptQrUrl) ? null : request.ReceiptQrUrl.Trim();
         shop.KitchenUrl = string.IsNullOrWhiteSpace(request.KitchenUrl) ? null : request.KitchenUrl.Trim();
 
-        // Loyalty (only apply what was sent).
-        if (request.LoyaltyEnabled.HasValue) shop.LoyaltyEnabled = request.LoyaltyEnabled.Value;
-        if (request.LoyaltyStampsRequired.HasValue) shop.LoyaltyStampsRequired = Math.Clamp(request.LoyaltyStampsRequired.Value, 2, 100);
-        if (request.LoyaltyReward != null)
-        {
-            var r = request.LoyaltyReward.Trim();
-            shop.LoyaltyReward = r.Length == 0 ? "Free item" : r;
-        }
-
         // Receipt customisation ("" clears a text field; absent = unchanged).
         if (request.ReceiptHeader != null) shop.ReceiptHeader = request.ReceiptHeader.Trim().Length == 0 ? null : request.ReceiptHeader.Trim();
         if (request.ReceiptFooter != null) shop.ReceiptFooter = request.ReceiptFooter.Trim().Length == 0 ? null : request.ReceiptFooter.Trim();
@@ -693,14 +746,23 @@ public class ShopsController : ControllerBase
         if (request.ReceiptShowLogo.HasValue) shop.ReceiptShowLogo = request.ReceiptShowLogo.Value;
 
         await _db.SaveChangesAsync();
-        return Ok(ShopMe(shop));
+        var brand = await EnsureBrandAsync(shop);
+        return Ok(ShopMe(shop, brand));
     }
 
-    // Shared shape for GET/PUT me: branding + loyalty + receipt settings.
-    private static object ShopMe(Shop s) => new
+    // Shared shape for GET/PUT me: shop branding + receipt + the BRAND's loyalty
+    // programme (rules + join token). loyaltyManagedByBrand tells the UI the shop
+    // admin's loyalty card is read-only.
+    private static object ShopMe(Shop s, Brand? b) => new
     {
-        s.Id, s.Name, s.Code, s.JoinToken, s.LogoUrl, s.ReceiptQrUrl, s.KitchenUrl,
-        s.LoyaltyEnabled, s.LoyaltyStampsRequired, s.LoyaltyReward,
+        s.Id, s.Name, s.Code, s.LogoUrl, s.ReceiptQrUrl, s.KitchenUrl,
+        JoinToken = b?.JoinToken,
+        LoyaltyEnabled = b?.LoyaltyEnabled ?? false,
+        LoyaltyStampsRequired = b?.LoyaltyStampsRequired ?? 10,
+        LoyaltyReward = b?.LoyaltyReward ?? "Free item",
+        BrandId = b?.Id,
+        BrandName = b?.Name,
+        LoyaltyManagedByBrand = true,
         s.ReceiptHeader, s.ReceiptFooter, s.ReceiptShowVat, s.ReceiptShowQr, s.ReceiptShowCashier, s.ReceiptShowLogo
     };
 }

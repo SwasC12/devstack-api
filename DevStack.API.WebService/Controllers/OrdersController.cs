@@ -21,7 +21,7 @@ public class OrdersController : ControllerBase
         _currentShop = currentShop;
     }
 
-    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null, string? DineMode = null, string? TableNumber = null, List<PaymentRequest>? Payments = null, decimal? Tip = null, decimal? ServiceChargePct = null, int? AccountCustomerId = null, int? LoyaltyCustomerId = null, bool RedeemLoyalty = false);
+    public record PlaceOrderRequest(List<OrderItemRequest> Items, string? PaymentMethod = null, decimal? AmountReceived = null, int? DiscountId = null, string? CustomerName = null, string? CustomerPhone = null, string? Notes = null, string? DineMode = null, string? TableNumber = null, List<PaymentRequest>? Payments = null, decimal? Tip = null, decimal? ServiceChargePct = null, int? AccountCustomerId = null, int? LoyaltyCustomerId = null, int? LoyaltyMemberId = null, bool RedeemLoyalty = false);
     public record PaymentRequest(string Method, decimal Amount);
     public record OrderItemRequest(int MenuItemId, string Name, decimal Price, int Quantity, int? SizeId = null, string? Note = null, List<int>? ModifierIds = null);
     public record VoidOrderRequest(string Reason);
@@ -334,28 +334,27 @@ public class OrdersController : ControllerBase
             }
         }
 
-        // Loyalty: earn or redeem a stamp for the attached customer, inside the
-        // same transaction as the sale. The shop config decides the threshold;
-        // redeeming (when eligible) spends LoyaltyStampsRequired stamps, else the
-        // purchase earns one. The POS shows the running count to the cashier.
-        if (request.LoyaltyCustomerId is int loyId)
+        // Loyalty: earn or redeem a stamp for the attached BRAND loyalty member,
+        // inside the same transaction as the sale. Loyalty is franchise-scoped, so
+        // the member + shared balance live on the brand this shop belongs to.
+        // (LoyaltyCustomerId is the pre-brand field name — still a member id.)
+        var loyaltyMemberId = request.LoyaltyMemberId ?? request.LoyaltyCustomerId;
+        if (loyaltyMemberId is int memberId)
         {
-            var shop = await _db.Shops.FindAsync(order.ShopId);
-            var loyaltyCustomer = await _db.Customers.FirstOrDefaultAsync(c => c.Id == loyId && c.ShopId == order.ShopId);
-            if (shop is { LoyaltyEnabled: true } && loyaltyCustomer is not null)
+            var brandId = await _db.Shops.Where(s => s.Id == order.ShopId).Select(s => s.BrandId).FirstOrDefaultAsync();
+            if (brandId is int bid)
             {
-                var required = shop.LoyaltyStampsRequired;
-                if (request.RedeemLoyalty && loyaltyCustomer.LoyaltyStamps >= required)
+                var brand = await _db.Brands.FindAsync(bid);
+                var member = await _db.LoyaltyMembers.FirstOrDefaultAsync(m => m.Id == memberId && m.BrandId == bid);
+                if (brand is { LoyaltyEnabled: true } && member is not null)
                 {
-                    // Redeem: subtract the required stamps
-                    loyaltyCustomer.LoyaltyStamps -= required;
+                    var required = brand.LoyaltyStampsRequired;
+                    if (request.RedeemLoyalty && member.LoyaltyStamps >= required)
+                        member.LoyaltyStamps -= required;      // redeem: spend the required stamps
+                    else if (!request.RedeemLoyalty)
+                        member.LoyaltyStamps += 1;             // earn one stamp
+                    // redeem attempted below threshold → leave balance unchanged
                 }
-                else if (!request.RedeemLoyalty)
-                {
-                    // Earn: add one stamp (only when not attempting to redeem)
-                    loyaltyCustomer.LoyaltyStamps += 1;
-                }
-                // If RedeemLoyalty is true but not enough stamps, do nothing
             }
         }
 

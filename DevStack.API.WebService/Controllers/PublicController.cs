@@ -7,12 +7,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DevStack.API.WebService.Controllers;
 
-// PUBLIC, unauthenticated endpoints for customer self-enrolment. A shopper
-// scans the shop's join QR, which opens the web signup page; the page reads the
-// shop's branding here and posts the signup here. Everything is scoped to the
-// shop's random JOIN TOKEN in the URL (never the human login code) - no auth,
-// no shop claim - so all data access opts out of the per-shop query filter and
-// sets ShopId explicitly from the resolved shop. Signup is rate-limited.
+// PUBLIC, unauthenticated endpoints for customer self-enrolment. A shopper scans
+// a BRAND join QR, which opens the web loyalty page. Loyalty is scoped to the
+// BRAND (franchise), not one shop, so the same card works at every shop of the
+// brand and never at another brand. Everything is keyed by the brand's random
+// join token in the URL (never a login code). Signup/sign-in are rate-limited.
 [ApiController]
 [Route("api/public")]
 [AllowAnonymous]
@@ -28,50 +27,49 @@ public class PublicController : ControllerBase
     private const int MinPasswordLength = 6;
 
     // Card payload shown to the signed-in customer.
-    private static object Card(Customer c, Shop s) => new
+    private static object Card(LoyaltyMember m, Brand b) => new
     {
-        name = c.Name,
-        loyaltyCode = c.LoyaltyCode,
-        shopName = s.Name,
-        reward = s.LoyaltyReward,
-        stampsRequired = s.LoyaltyStampsRequired,
-        stamps = c.LoyaltyStamps
+        name = m.Name,
+        loyaltyCode = m.LoyaltyCode,
+        shopName = b.Name,                 // the brand name (field kept as shopName for the UI)
+        reward = b.LoyaltyReward,
+        stampsRequired = b.LoyaltyStampsRequired,
+        stamps = m.LoyaltyStamps
     };
 
-    // Resolve the shop behind a public join token (active shops only).
-    private Task<Shop?> ShopByTokenAsync(string token, bool tracking = false)
+    // Resolve the brand behind a public join token.
+    private Task<Brand?> BrandByTokenAsync(string token, bool tracking = false)
     {
         var norm = (token ?? "").Trim().ToUpperInvariant();
-        var q = tracking ? _db.Shops : _db.Shops.AsNoTracking();
-        return q.FirstOrDefaultAsync(s => s.JoinToken == norm && s.IsActive);
+        var q = tracking ? _db.Brands : _db.Brands.AsNoTracking();
+        return q.FirstOrDefaultAsync(b => b.JoinToken == norm);
     }
 
-    // GET api/public/shop/{token} — branding + loyalty summary for the signup
-    // page. Only active shops; the real login code is NEVER exposed.
+    // GET api/public/shop/{token} — brand branding + loyalty summary for the page.
     [HttpGet("shop/{token}")]
     public async Task<ActionResult> GetShop(string token)
     {
-        var shop = await ShopByTokenAsync(token);
-        if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
+        var brand = await BrandByTokenAsync(token);
+        if (brand is null) return NotFound(new { error = "We couldn't find that shop." });
         return Ok(new
         {
-            shop.Name,
-            shop.LogoUrl,
-            shop.LoyaltyEnabled,
-            shop.LoyaltyReward,
-            shop.LoyaltyStampsRequired
+            Name = brand.Name,
+            LogoUrl = brand.LogoUrl,
+            brand.LoyaltyEnabled,
+            brand.LoyaltyReward,
+            brand.LoyaltyStampsRequired
         });
     }
 
     // POST api/public/member/{token} — returning customer SIGNS IN with their
-    // phone / email / loyalty code AND their password. The password is what
-    // stops someone who merely knows a phone number from opening the card.
+    // phone / email / loyalty code AND their password. The password is what stops
+    // someone who merely knows a phone number from opening the card.
     [HttpPost("member/{token}")]
     [EnableRateLimiting("auth")]
     public async Task<ActionResult> Member(string token, MemberLookupRequest request)
     {
-        var shop = await ShopByTokenAsync(token, tracking: true);
-        if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
+        var brand = await BrandByTokenAsync(token, tracking: true);
+        if (brand is null) return NotFound(new { error = "We couldn't find that shop." });
 
         var q = (request.Identifier ?? "").Trim();
         var password = request.Password ?? "";
@@ -83,60 +81,58 @@ public class PublicController : ControllerBase
         var upper = q.ToUpperInvariant();
         var lower = q.ToLowerInvariant();
         var qNorm = NormalizePhone(q);
-        var customer = await _db.Customers.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.ShopId == shop.Id &&
-                (c.LoyaltyCode == upper
-                 || (c.Email != null && c.Email.ToLower() == lower)
-                 || (c.Phone != null && c.Phone.Replace(" ", "").Replace("-", "") == qNorm)));
-        if (customer is null)
+        var member = await _db.LoyaltyMembers
+            .FirstOrDefaultAsync(m => m.BrandId == brand.Id &&
+                (m.LoyaltyCode == upper
+                 || (m.Email != null && m.Email.ToLower() == lower)
+                 || (m.Phone != null && m.Phone.Replace(" ", "").Replace("-", "") == qNorm)));
+        if (member is null)
             return NotFound(new { error = "No loyalty card found. Please sign up." });
 
-        if (string.IsNullOrEmpty(customer.LoyaltyPasswordHash))
+        if (string.IsNullOrEmpty(member.LoyaltyPasswordHash))
         {
-            // Legacy account created before passwords: first successful sign-in
-            // sets the password (a one-time claim for the transition window).
+            // Legacy member with no password: first sign-in sets it (transition).
             if (password.Length < MinPasswordLength)
                 return BadRequest(new { error = $"Set a password of at least {MinPasswordLength} characters." });
-            customer.LoyaltyPasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+            member.LoyaltyPasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
             await _db.SaveChangesAsync();
         }
-        else if (!BCrypt.Net.BCrypt.Verify(password, customer.LoyaltyPasswordHash))
+        else if (!BCrypt.Net.BCrypt.Verify(password, member.LoyaltyPasswordHash))
         {
             return Unauthorized(new { error = "Incorrect password." });
         }
 
-        return Ok(Card(customer, shop));
+        return Ok(Card(member, brand));
     }
 
-    // POST api/public/member-resume/{token} — refresh the card for a device that
-    // already signed in, using the loyalty code kept in that browser. No password
-    // (the random code is the device's own session token); read-only.
+    // POST api/public/member-resume/{token} — refresh a card for a device that
+    // already signed in, using the stored loyalty code. No password; read-only.
     [HttpPost("member-resume/{token}")]
     [EnableRateLimiting("auth")]
     public async Task<ActionResult> MemberResume(string token, MemberResumeRequest request)
     {
-        var shop = await ShopByTokenAsync(token);
-        if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
+        var brand = await BrandByTokenAsync(token);
+        if (brand is null) return NotFound(new { error = "We couldn't find that shop." });
 
         var code = (request.LoyaltyCode ?? "").Trim().ToUpperInvariant();
         if (string.IsNullOrWhiteSpace(code)) return BadRequest(new { error = "Missing code." });
 
-        var customer = await _db.Customers.AsNoTracking().IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.ShopId == shop.Id && c.LoyaltyCode == code);
-        if (customer is null) return NotFound(new { error = "Card not found." });
+        var member = await _db.LoyaltyMembers.AsNoTracking()
+            .FirstOrDefaultAsync(m => m.BrandId == brand.Id && m.LoyaltyCode == code);
+        if (member is null) return NotFound(new { error = "Card not found." });
 
-        return Ok(Card(customer, shop));
+        return Ok(Card(member, brand));
     }
 
-    // POST api/public/signup/{token} — enrol (or re-find) a customer for the shop
-    // and return the loyalty code their personal QR encodes.
+    // POST api/public/signup/{token} — enrol a customer into the brand's loyalty
+    // programme and return the loyalty code their personal QR encodes.
     [HttpPost("signup/{token}")]
     [EnableRateLimiting("auth")]
     public async Task<ActionResult> Signup(string token, SignupRequest request)
     {
-        var shop = await ShopByTokenAsync(token, tracking: true);
-        if (shop is null) return NotFound(new { error = "We couldn't find that shop." });
-        if (!shop.LoyaltyEnabled) return BadRequest(new { error = "This shop's loyalty programme isn't active." });
+        var brand = await BrandByTokenAsync(token, tracking: true);
+        if (brand is null) return NotFound(new { error = "We couldn't find that shop." });
+        if (!brand.LoyaltyEnabled) return BadRequest(new { error = "This shop's loyalty programme isn't active." });
 
         var name = request.Name?.Trim();
         var phone = request.Phone?.Trim();
@@ -149,26 +145,23 @@ public class PublicController : ControllerBase
             return BadRequest(new { error = $"Please set a password of at least {MinPasswordLength} characters." });
         if (!request.Consent) return BadRequest(new { error = "Please accept the terms to join." });
 
-        // Format validation (mirrors the client, but the server is the authority).
         if (!string.IsNullOrWhiteSpace(phone) && !IsValidPhone(phone))
             return BadRequest(new { error = "Please enter a valid phone number." });
         if (!string.IsNullOrWhiteSpace(email) && !IsValidEmail(email))
             return BadRequest(new { error = "Please enter a valid email address." });
 
-        // One membership per phone / email: a returning shopper must sign in
-        // (Check my points), not create a second card. Phone is matched
-        // space/dash-insensitively; email case-insensitively.
+        // One membership per phone / email within the BRAND.
         var phoneNorm = NormalizePhone(phone);
         var emailNorm = email?.ToLowerInvariant();
-        var dup = await _db.Customers.IgnoreQueryFilters().AnyAsync(c => c.ShopId == shop.Id &&
-            ((phoneNorm != null && c.Phone != null && c.Phone.Replace(" ", "").Replace("-", "") == phoneNorm)
-             || (emailNorm != null && c.Email != null && c.Email.ToLower() == emailNorm)));
+        var dup = await _db.LoyaltyMembers.AnyAsync(m => m.BrandId == brand.Id &&
+            ((phoneNorm != null && m.Phone != null && m.Phone.Replace(" ", "").Replace("-", "") == phoneNorm)
+             || (emailNorm != null && m.Email != null && m.Email.ToLower() == emailNorm)));
         if (dup)
             return Conflict(new { error = "This email/number is already in use." });
 
-        var customer = new Customer
+        var member = new LoyaltyMember
         {
-            ShopId = shop.Id,
+            BrandId = brand.Id,
             Name = name,
             Phone = string.IsNullOrWhiteSpace(phone) ? null : phone,
             Email = string.IsNullOrWhiteSpace(email) ? null : email,
@@ -178,14 +171,11 @@ public class PublicController : ControllerBase
             LoyaltyCode = await GenerateUniqueLoyaltyCodeAsync(),
             LoyaltyPasswordHash = BCrypt.Net.BCrypt.HashPassword(password)
         };
-        _db.Customers.Add(customer);
-
+        _db.LoyaltyMembers.Add(member);
         await _db.SaveChangesAsync();
-        return Ok(Card(customer, shop));
+        return Ok(Card(member, brand));
     }
 
-    // Digits-only phone (spaces/dashes stripped) for duplicate comparison; null
-    // when there's no phone.
     private static string? NormalizePhone(string? phone)
         => string.IsNullOrWhiteSpace(phone) ? null : phone.Replace(" ", "").Replace("-", "");
 
@@ -202,8 +192,7 @@ public class PublicController : ControllerBase
         catch { return false; }
     }
 
-    // Short, URL/QR-friendly, unambiguous code (no 0/O/1/I). Retries on the rare
-    // collision against the unique index.
+    // Short, URL/QR-friendly, unambiguous code (no 0/O/1/I), unique across brands.
     private async Task<string> GenerateUniqueLoyaltyCodeAsync()
     {
         const string alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -213,10 +202,9 @@ public class PublicController : ControllerBase
             var sb = new System.Text.StringBuilder(10);
             foreach (var b in bytes) sb.Append(alphabet[b % alphabet.Length]);
             var candidate = sb.ToString();
-            if (!await _db.Customers.IgnoreQueryFilters().AnyAsync(c => c.LoyaltyCode == candidate))
+            if (!await _db.LoyaltyMembers.AnyAsync(m => m.LoyaltyCode == candidate))
                 return candidate;
         }
-        // Extremely unlikely fallback: timestamp-suffixed.
         return "L" + DateTime.UtcNow.Ticks.ToString("X");
     }
 }

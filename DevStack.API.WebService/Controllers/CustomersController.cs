@@ -69,9 +69,9 @@ public class CustomersController : ControllerBase
     }
 
     // GET api/customers/loyalty-lookup?q= — ANY shop user (cashiers included):
-    // a minimal customer lookup for attaching loyalty at the POS. Matches an
-    // exact loyalty code (from a scanned QR) or a phone/name substring. Returns
-    // only what the till needs — never the full account directory.
+    // find a loyalty MEMBER of this shop's BRAND (franchise) to attach at the POS.
+    // Matches an exact loyalty code (scanned QR) or a phone/name substring. The
+    // returned Id is a LoyaltyMember id (sent back to checkout as loyaltyMemberId).
     [Authorize]
     [HttpGet("loyalty-lookup")]
     public async Task<ActionResult> LoyaltyLookup([FromQuery] string q)
@@ -79,8 +79,11 @@ public class CustomersController : ControllerBase
         var term = (q ?? "").Trim();
         if (term.Length < 2) return Ok(Array.Empty<object>());
 
-        // Normalize phone search: if term looks like a phone number, search both
-        // "+27..." and "0..." formats. SA phones can be stored either way.
+        var brandId = await _db.Shops.Where(s => s.Id == _currentShop.ShopId).Select(s => s.BrandId).FirstOrDefaultAsync();
+        if (brandId is null) return Ok(Array.Empty<object>());
+
+        var upper = term.ToUpperInvariant();
+        // SA phones stored as "0..." or "+27..." — search both forms.
         var isPhone = term.All(c => char.IsDigit(c) || c == '+');
         var altPhone = isPhone && term.StartsWith("0")
             ? "+27" + term.Substring(1)
@@ -88,13 +91,14 @@ public class CustomersController : ControllerBase
                 ? "0" + term.Substring(3)
                 : null;
 
-        var matches = await _db.Customers.AsNoTracking()
-            .Where(c => c.LoyaltyCode == term
-                || (c.Phone != null && (c.Phone.Contains(term) || (altPhone != null && c.Phone.Contains(altPhone))))
-                || c.Name.Contains(term))
-            .OrderBy(c => c.Name)
+        var matches = await _db.LoyaltyMembers.AsNoTracking()
+            .Where(m => m.BrandId == brandId &&
+                (m.LoyaltyCode == upper
+                 || (m.Phone != null && (m.Phone.Contains(term) || (altPhone != null && m.Phone.Contains(altPhone))))
+                 || m.Name.Contains(term)))
+            .OrderBy(m => m.Name)
             .Take(6)
-            .Select(c => new { c.Id, c.Name, c.Phone, c.LoyaltyStamps })
+            .Select(m => new { m.Id, m.Name, m.Phone, m.LoyaltyStamps })
             .ToListAsync();
         return Ok(matches);
     }
