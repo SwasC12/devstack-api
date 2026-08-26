@@ -39,6 +39,8 @@ public class DevStackDataModel : DbContext
     public DbSet<OrderPayment> OrderPayments => Set<OrderPayment>();
     public DbSet<Expense> Expenses => Set<Expense>();
     public DbSet<AuditLogEntry> AuditLog => Set<AuditLogEntry>();
+    public DbSet<Brand> Brands => Set<Brand>();
+    public DbSet<LoyaltyMember> LoyaltyMembers => Set<LoyaltyMember>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -66,6 +68,21 @@ public class DevStackDataModel : DbContext
             .HasIndex(s => s.JoinToken)
             .IsUnique()
             .HasFilter("[JoinToken] IS NOT NULL");
+
+        // Brand: the franchise/loyalty-programme grouping. Its public join token
+        // is unique + unguessable, same as the old per-shop one.
+        modelBuilder.Entity<Brand>()
+            .HasIndex(b => b.JoinToken)
+            .IsUnique()
+            .HasFilter("[JoinToken] IS NOT NULL");
+
+        // Loyalty member: personal code unique across all brands; fast lookup by brand.
+        modelBuilder.Entity<LoyaltyMember>()
+            .HasIndex(m => m.LoyaltyCode)
+            .IsUnique()
+            .HasFilter("[LoyaltyCode] IS NOT NULL");
+        modelBuilder.Entity<LoyaltyMember>()
+            .HasIndex(m => m.BrandId);
 
         modelBuilder.Entity<MenuItem>()
             .Property(i => i.Price)

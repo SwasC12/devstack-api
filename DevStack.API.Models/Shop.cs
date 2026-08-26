@@ -7,6 +7,10 @@ public class Shop
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Code { get; set; } = string.Empty; // short, uppercase, unique — typed at login
+    // The franchise / loyalty programme this shop belongs to. Loyalty membership
+    // and the shared stamp balance live at the brand, so franchise siblings share
+    // one card. Null only briefly before the startup backfill assigns one.
+    public int? BrandId { get; set; }
     // Randomised, unguessable token for the PUBLIC loyalty join URL
     // (/join/<JoinToken>). Deliberately NOT the human Code: the code is a login
     // secret typed by staff, so it must never appear in a customer-facing QR.
